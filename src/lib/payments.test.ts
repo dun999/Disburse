@@ -3,10 +3,14 @@ import { encodeAbiParameters, encodeEventTopics, type Log } from "viem";
 import { erc20Abi, TOKENS } from "./arc";
 import {
   buildShareUrl,
+  createExpiry,
   decodeRequestPayload,
   decodeTransferLog,
   encodeRequestPayload,
   formatTokenAmount,
+  isPaymentExpired,
+  isPaymentPayable,
+  normalizeInvoiceDate,
   parseTokenAmount,
   transferMatchesRequest,
   validateRecipient,
@@ -23,6 +27,8 @@ const baseRequest: PaymentRequest = {
   amount: "12.34",
   label: "Invoice 7421",
   note: "Settlement desk",
+  invoiceDate: "2026-04-28",
+  expiresAt: "2026-04-28T00:15:00.000Z",
   createdAt: "2026-04-28T00:00:00.000Z",
   startBlock: "700",
   status: "open"
@@ -55,6 +61,9 @@ describe("request payload URLs", () => {
       token: baseRequest.token,
       amount: baseRequest.amount,
       label: baseRequest.label,
+      note: baseRequest.note,
+      invoiceDate: baseRequest.invoiceDate,
+      expiresAt: baseRequest.expiresAt,
       startBlock: baseRequest.startBlock,
       status: "open"
     });
@@ -62,6 +71,29 @@ describe("request payload URLs", () => {
 
   it("builds the /pay request URL", () => {
     expect(buildShareUrl(baseRequest, "https://desk.example")).toMatch(/^https:\/\/desk\.example\/pay\?r=/);
+  });
+});
+
+describe("QR request metadata", () => {
+  it("normalizes invoice dates and keeps them separate from expiry", () => {
+    expect(normalizeInvoiceDate("2026-04-29")).toBe("2026-04-29");
+    expect(createExpiry("2026-04-29T10:00:00.000Z")).toBe("2026-04-29T10:15:00.000Z");
+    expect(() => normalizeInvoiceDate("04/29/26")).toThrow("valid invoice date");
+  });
+
+  it("blocks expired QR requests unless a payment attempt started before expiry", () => {
+    const afterExpiry = new Date("2026-04-28T00:16:00.000Z");
+    expect(isPaymentExpired(baseRequest, afterExpiry)).toBe(true);
+    expect(isPaymentPayable(baseRequest, afterExpiry)).toBe(false);
+    expect(
+      isPaymentPayable(
+        {
+          ...baseRequest,
+          submittedAt: "2026-04-28T00:14:59.000Z"
+        },
+        afterExpiry
+      )
+    ).toBe(true);
   });
 });
 

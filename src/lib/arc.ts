@@ -1,10 +1,39 @@
-import { createPublicClient, defineChain, http, parseAbi, parseAbiItem, type Address } from "viem";
+import { createPublicClient, defineChain, fallback, http, parseAbi, parseAbiItem, parseGwei, type Address } from "viem";
 
 export const ARC_CHAIN_ID = 5_042_002;
-export const ARC_RPC_URL = "https://rpc.testnet.arc.network";
+export const ARC_RPC_ENDPOINTS = [
+  {
+    id: "public",
+    label: "Arc public",
+    url: "https://rpc.testnet.arc.network",
+    webSocketUrl: "wss://rpc.testnet.arc.network"
+  },
+  {
+    id: "blockdaemon",
+    label: "Blockdaemon",
+    url: "https://rpc.blockdaemon.testnet.arc.network"
+  },
+  {
+    id: "drpc",
+    label: "dRPC",
+    url: "https://rpc.drpc.testnet.arc.network",
+    webSocketUrl: "wss://rpc.drpc.testnet.arc.network"
+  },
+  {
+    id: "quicknode",
+    label: "QuickNode",
+    url: "https://rpc.quicknode.testnet.arc.network",
+    webSocketUrl: "wss://rpc.quicknode.testnet.arc.network"
+  }
+] as const;
+export const ARC_RPC_URL = ARC_RPC_ENDPOINTS[0].url;
 export const ARC_EXPLORER_URL = "https://testnet.arcscan.app";
 export const ARC_FAUCET_URL = "https://faucet.circle.com";
 export const ARC_DOCS_URL = "https://docs.arc.network/arc/references/connect-to-arc";
+export const ARC_MIN_GAS_PRICE_GWEI = "20";
+export const ARC_MIN_GAS_PRICE = parseGwei(ARC_MIN_GAS_PRICE_GWEI);
+
+export type ArcRpcEndpoint = (typeof ARC_RPC_ENDPOINTS)[number];
 
 export const arcTestnet = defineChain({
   id: ARC_CHAIN_ID,
@@ -16,8 +45,8 @@ export const arcTestnet = defineChain({
   },
   rpcUrls: {
     default: {
-      http: [ARC_RPC_URL],
-      webSocket: ["wss://rpc.testnet.arc.network"]
+      http: ARC_RPC_ENDPOINTS.map((endpoint) => endpoint.url),
+      webSocket: ARC_RPC_ENDPOINTS.flatMap((endpoint) => ("webSocketUrl" in endpoint ? [endpoint.webSocketUrl] : []))
     }
   },
   blockExplorers: {
@@ -58,5 +87,14 @@ export const transferEvent = parseAbiItem(
 
 export const publicClient = createPublicClient({
   chain: arcTestnet,
-  transport: http(ARC_RPC_URL)
+  transport: fallback(
+    ARC_RPC_ENDPOINTS.map((endpoint) =>
+      http(endpoint.url, {
+        timeout: 8_000
+      })
+    ),
+    {
+      retryCount: 2
+    }
+  )
 });

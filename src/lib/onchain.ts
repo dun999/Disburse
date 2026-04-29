@@ -1,9 +1,10 @@
 import {
+  createPublicClient,
   createWalletClient,
   custom,
   formatUnits,
   getAddress,
-  parseGwei,
+  http,
   type Address,
   type EIP1193Provider,
   type Hash
@@ -11,12 +12,15 @@ import {
 import {
   ARC_CHAIN_ID,
   ARC_EXPLORER_URL,
+  ARC_MIN_GAS_PRICE,
+  ARC_RPC_ENDPOINTS,
   ARC_RPC_URL,
   TOKENS,
   arcTestnet,
   erc20Abi,
   publicClient,
-  transferEvent
+  transferEvent,
+  type ArcRpcEndpoint
 } from "./arc";
 import {
   decodeTransferLog,
@@ -25,6 +29,7 @@ import {
   transferMatchesRequest,
   type DecodedTransfer,
   type PaymentRequest,
+  type PaymentToken,
   type Receipt
 } from "./payments";
 
@@ -45,10 +50,50 @@ export type TransferEstimate = {
   fee: string;
 };
 
+export type TokenTransfer = {
+  recipient: Address;
+  token: PaymentToken;
+  amount: string;
+};
+
+export type RpcEndpointStatus = {
+  id: ArcRpcEndpoint["id"];
+  label: string;
+  url: string;
+  host: string;
+  healthy: boolean;
+  chainId?: number;
+  blockNumber?: string;
+  gasPrice?: string;
+  safeGasPrice?: string;
+  latencyMs?: number;
+  error?: string;
+};
+
+export type RpcHealth = {
+  healthy: boolean;
+  checkedAt: string;
+  activeEndpoint?: RpcEndpointStatus;
+  endpoints: RpcEndpointStatus[];
+  chainId?: number;
+  blockNumber?: string;
+  gasPrice?: string;
+  safeGasPrice?: string;
+  usdcDecimals?: number;
+  eurcDecimals?: number;
+};
+
 export type VerificationResult =
   | { status: "paid"; receipt: Receipt; message: string }
   | { status: "possible_match"; transfer: DecodedTransfer; message: string }
   | { status: "open"; message: string };
+
+export const ARC_LOG_WINDOW_BLOCKS = 10_000n;
+
+export type BlockRange = {
+  fromBlock: bigint;
+  toBlock: bigint;
+};
 
 export function getInjectedProvider(): EthereumProvider | undefined {
   if (typeof window === "undefined") {
@@ -103,11 +148,11 @@ export async function switchToArc(provider: EthereumProvider): Promise<void> {
   }
 }
 
-export async function readBalances(account: Address, request: PaymentRequest): Promise<Balances> {
+export async function readBalances(account: Address, transfer: TokenTransfer): Promise<Balances> {
   const [nativeBalance, tokenBalance, gasPrice] = await Promise.all([
     publicClient.getBalance({ address: account }),
     publicClient.readContract({
-      address: TOKENS[request.token].address,
+      address: TOKENS[transfer.token].address,
       abi: erc20Abi,
       functionName: "balanceOf",
       args: [account]
@@ -117,20 +162,20 @@ export async function readBalances(account: Address, request: PaymentRequest): P
 
   return {
     nativeGas: formatUnits(nativeBalance, 18),
-    tokenBalance: formatUnits(tokenBalance, TOKENS[request.token].decimals),
-    gasPrice: formatUnits(gasPrice, 18)
+    tokenBalance: formatUnits(tokenBalance, TOKENS[transfer.token].decimals),
+    gasPrice: formatUnits(applyArcGasFloor(gasPrice), 18)
   };
 }
 
-export async function estimatePayment(account: Address, request: PaymentRequest): Promise<TransferEstimate> {
-  const amount = parseTokenAmount(request.amount, request.token);
+export async function estimatePayment(account: Address, transfer: TokenTransfer): Promise<TransferEstimate> {
+  const amount = parseTokenAmount(transfer.amount, transfer.token);
   const gasPrice = await currentSafeGasPrice();
   const gas = await publicClient.estimateContractGas({
     account,
-    address: TOKENS[request.token].address,
+    address: TOKENS[transfer.token].address,
     abi: erc20Abi,
     functionName: "transfer",
-    args: [request.recipient, amount],
+    args: [transfer.recipient, amount],
     gasPrice
   });
 
@@ -141,10 +186,10 @@ export async function estimatePayment(account: Address, request: PaymentRequest)
   };
 }
 
-export async function sendPayment(
+export async function sendTokenTransfer(
   provider: EthereumProvider,
   account: Address,
-  request: PaymentRequest,
+  transferRequest: TokenTransfer,
   estimate?: TransferEstimate
 ): Promise<Hash> {
   const walletClient = createWalletClient({
@@ -153,14 +198,14 @@ export async function sendPayment(
     transport: custom(provider)
   });
 
-  const amount = parseTokenAmount(request.amount, request.token);
+  const amount = parseTokenAmount(transferRequest.amount, transferRequest.token);
   const transfer = {
     account,
     chain: arcTestnet,
-    address: TOKENS[request.token].address,
+    address: TOKENS[transferRequest.token].address,
     abi: erc20Abi,
     functionName: "transfer",
-    args: [request.recipient, amount]
+    args: [transferRequest.recipient, amount]
   } as const;
 
   const hash = await walletClient.writeContract(
@@ -181,9 +226,16 @@ export async function sendPayment(
   return hash;
 }
 
-export async function verifyPayment(request: PaymentRequest): Promise<VerificationResult> {
-  const exactAmount = parseTokenAmount(request.amount, request.token);
+export async function sendPayment(
+  provider: EthereumProvider,
+  account: Address,
+  request: PaymentRequest,
+  estimate?: TransferEstimate
+): Promise<Hash> {
+  return sendTokenTransfer(provider, account, request, estimate);
+}
 
+export async function verifyPayment(request: PaymentRequest): Promise<VerificationResult> {
   if (request.txHash) {
     try {
       const receipt = await publicClient.getTransactionReceipt({ hash: request.txHash });
@@ -207,15 +259,22 @@ export async function verifyPayment(request: PaymentRequest): Promise<Verificati
     }
   }
 
-  const logs = await publicClient.getLogs({
-    address: TOKENS[request.token].address,
-    event: transferEvent,
-    args: {
-      to: request.recipient
-    },
-    fromBlock: BigInt(request.startBlock),
-    toBlock: "latest"
-  });
+  const latestBlock = await publicClient.getBlockNumber();
+  const ranges = buildLogBlockRanges(BigInt(request.startBlock), latestBlock);
+  const logs = [];
+
+  for (const range of ranges) {
+    const batch = await publicClient.getLogs({
+      address: TOKENS[request.token].address,
+      event: transferEvent,
+      args: {
+        to: request.recipient
+      },
+      fromBlock: range.fromBlock,
+      toBlock: range.toBlock
+    });
+    logs.push(...batch);
+  }
 
   const transfers = logs
     .map((log) => ({
@@ -227,7 +286,52 @@ export async function verifyPayment(request: PaymentRequest): Promise<Verificati
     }))
     .filter((transfer): transfer is DecodedTransfer => Boolean(transfer.txHash && transfer.blockNumber));
 
-  const exact = transfers.find((transfer) => transfer.value === exactAmount);
+  return resolveTransferVerification(request, transfers);
+}
+
+export function buildLogBlockRanges(
+  fromBlock: bigint,
+  toBlock: bigint,
+  windowSize = ARC_LOG_WINDOW_BLOCKS
+): BlockRange[] {
+  if (windowSize <= 0n) {
+    throw new Error("Log scan window must be greater than zero.");
+  }
+
+  if (fromBlock > toBlock) {
+    return [];
+  }
+
+  const ranges: BlockRange[] = [];
+  let cursor = fromBlock;
+
+  while (cursor <= toBlock) {
+    const end = cursor + windowSize - 1n;
+    ranges.push({
+      fromBlock: cursor,
+      toBlock: end > toBlock ? toBlock : end
+    });
+    cursor += windowSize;
+  }
+
+  return ranges;
+}
+
+export function resolveTransferVerification(
+  request: PaymentRequest,
+  transfers: DecodedTransfer[]
+): VerificationResult {
+  const sortedTransfers = [...transfers].sort((left, right) => {
+    if (left.blockNumber === right.blockNumber) {
+      return 0;
+    }
+    return left.blockNumber < right.blockNumber ? -1 : 1;
+  });
+  const recipientTransfers = sortedTransfers.filter(
+    (transfer) => transfer.to.toLowerCase() === request.recipient.toLowerCase()
+  );
+
+  const exact = recipientTransfers.find((transfer) => transferMatchesRequest(request, transfer));
   if (exact) {
     return {
       status: "paid",
@@ -236,7 +340,7 @@ export async function verifyPayment(request: PaymentRequest): Promise<Verificati
     };
   }
 
-  const possible = transfers.at(-1);
+  const possible = recipientTransfers.at(-1);
   if (possible) {
     return {
       status: "possible_match",
@@ -251,17 +355,27 @@ export async function verifyPayment(request: PaymentRequest): Promise<Verificati
   };
 }
 
-export async function checkArcRpc() {
-  const [chainId, blockNumber, gasPrice, usdcDecimals, eurcDecimals] = await Promise.all([
-    publicClient.getChainId(),
-    publicClient.getBlockNumber(),
-    publicClient.getGasPrice(),
-    publicClient.readContract({
+export async function checkArcRpc(): Promise<RpcHealth> {
+  const endpoints = await Promise.all(ARC_RPC_ENDPOINTS.map(probeArcRpcEndpoint));
+  const activeEndpoint = selectActiveRpcEndpoint(endpoints);
+  const checkedAt = new Date().toISOString();
+
+  if (!activeEndpoint) {
+    return {
+      healthy: false,
+      checkedAt,
+      endpoints
+    };
+  }
+
+  const activeClient = createEndpointPublicClient(activeEndpoint.url);
+  const [usdcDecimals, eurcDecimals] = await Promise.all([
+    activeClient.readContract({
       address: TOKENS.USDC.address,
       abi: erc20Abi,
       functionName: "decimals"
     }),
-    publicClient.readContract({
+    activeClient.readContract({
       address: TOKENS.EURC.address,
       abi: erc20Abi,
       functionName: "decimals"
@@ -269,18 +383,103 @@ export async function checkArcRpc() {
   ]);
 
   return {
-    chainId,
-    blockNumber: blockNumber.toString(),
-    gasPrice: formatUnits(gasPrice, 18),
+    healthy: true,
+    checkedAt,
+    activeEndpoint,
+    endpoints,
+    chainId: activeEndpoint.chainId,
+    blockNumber: activeEndpoint.blockNumber,
+    gasPrice: activeEndpoint.gasPrice,
+    safeGasPrice: activeEndpoint.safeGasPrice,
     usdcDecimals,
     eurcDecimals
   };
 }
 
+export function applyArcGasFloor(gasPrice: bigint): bigint {
+  return gasPrice > ARC_MIN_GAS_PRICE ? gasPrice : ARC_MIN_GAS_PRICE;
+}
+
+export function selectActiveRpcEndpoint(statuses: RpcEndpointStatus[]): RpcEndpointStatus | undefined {
+  return statuses
+    .filter((status) => status.healthy)
+    .sort((left, right) => {
+      const leftBlock = BigInt(left.blockNumber ?? 0);
+      const rightBlock = BigInt(right.blockNumber ?? 0);
+      if (leftBlock !== rightBlock) {
+        return leftBlock > rightBlock ? -1 : 1;
+      }
+
+      return (left.latencyMs ?? Number.MAX_SAFE_INTEGER) - (right.latencyMs ?? Number.MAX_SAFE_INTEGER);
+    })[0];
+}
+
 async function currentSafeGasPrice(): Promise<bigint> {
   const gasPrice = await publicClient.getGasPrice();
-  const minimum = parseGwei("20");
-  return gasPrice > minimum ? gasPrice : minimum;
+  return applyArcGasFloor(gasPrice);
+}
+
+async function probeArcRpcEndpoint(endpoint: ArcRpcEndpoint): Promise<RpcEndpointStatus> {
+  const startedAt = Date.now();
+  const host = new URL(endpoint.url).host;
+  const client = createEndpointPublicClient(endpoint.url);
+
+  try {
+    const [chainId, blockNumber, gasPrice] = await Promise.all([
+      client.getChainId(),
+      client.getBlockNumber(),
+      client.getGasPrice()
+    ]);
+    const healthy = chainId === ARC_CHAIN_ID;
+
+    return {
+      id: endpoint.id,
+      label: endpoint.label,
+      url: endpoint.url,
+      host,
+      healthy,
+      chainId,
+      blockNumber: blockNumber.toString(),
+      gasPrice: formatUnits(gasPrice, 18),
+      safeGasPrice: formatUnits(applyArcGasFloor(gasPrice), 18),
+      latencyMs: Date.now() - startedAt,
+      error: healthy ? undefined : `Unexpected chain ID ${chainId}.`
+    };
+  } catch (error) {
+    return {
+      id: endpoint.id,
+      label: endpoint.label,
+      url: endpoint.url,
+      host,
+      healthy: false,
+      latencyMs: Date.now() - startedAt,
+      error: errorToStatusMessage(error)
+    };
+  }
+}
+
+function createEndpointPublicClient(url: string) {
+  return createPublicClient({
+    chain: arcTestnet,
+    transport: http(url, {
+      timeout: 8_000
+    })
+  });
+}
+
+function errorToStatusMessage(error: unknown): string {
+  if (typeof error === "object" && error !== null && "shortMessage" in error) {
+    const shortMessage = (error as { shortMessage?: unknown }).shortMessage;
+    if (typeof shortMessage === "string" && shortMessage.trim()) {
+      return shortMessage;
+    }
+  }
+
+  if (error instanceof Error && error.message.trim()) {
+    return error.message;
+  }
+
+  return "Endpoint did not respond.";
 }
 
 function readProviderErrorCode(error: unknown): number | undefined {

@@ -1,136 +1,140 @@
 # Disburse
 
-Disburse is a local-first payment request console for Arc Testnet. It lets a merchant or operator create stablecoin payment requests, share payable links, connect an injected wallet, send USDC or EURC transfers, verify settlement from on-chain logs, and export or import the local ledger.
+Disburse is a client-side Arc Testnet payment console for wallet-signed stablecoin transfers.
 
-The app is fully client-side. It does not run a backend, custody funds, store private keys, or relay wallet signatures.
+It supports two current flows:
 
-## Features
+- **Payments**: send USDC or EURC directly from the connected wallet to a recipient address.
+- **QR Payments**: create a fixed wallet payment request, share it as a QR code, let another wallet pay it, verify the on-chain transfer, and generate a PDF invoice.
 
-- Create payment requests with recipient, token, amount, label, optional note, and optional due date.
-- Generate share links in the `/pay?r=...` format.
-- Connect an injected EIP-1193 wallet and switch or add Arc Testnet.
-- Show live Arc RPC health, gas price, token decimals, wallet gas balance, and token balance.
-- Estimate and submit ERC-20 `transfer(recipient, amount)` transactions.
-- Verify payment by receipt hash or by scanning matching `Transfer` logs from the request start block.
-- Store requests and receipts in browser `localStorage`.
-- Export and import the request and receipt ledger as JSON.
-- Provide an in-app `/docs` page describing runtime, payload, execution, and verification boundaries.
 
-## Tech Stack
+## Stack
 
+- Vite
 - React 19
 - TypeScript
-- Vite
-- Tailwind CSS 4
-- viem
-- Vitest
+- viem for wallet/RPC/contract calls
+- qrcode for QR image generation
+- pdf-lib for local invoice PDFs
+- Vitest for unit tests
 
-## Prerequisites
-
-- Node.js 20 or newer
-- npm
-- An injected wallet such as MetaMask or Rabby
-- Arc Testnet funds for gas and test USDC/EURC payments
-
-## Getting Started
-
-Install dependencies:
+## Scripts
 
 ```bash
 npm install
-```
-
-Start the development server:
-
-```bash
 npm run dev
-```
-
-Vite serves the app at:
-
-```text
-http://localhost:5173
-```
-
-If port `5173` is already in use, Vite will choose another available port.
-
-## Available Scripts
-
-```bash
-npm run dev
-```
-
-Runs the Vite development server.
-
-```bash
 npm run typecheck
-```
-
-Runs TypeScript project checks without emitting files.
-
-```bash
 npm test
-```
-
-Runs the Vitest test suite once.
-
-```bash
 npm run build
 ```
 
-Runs TypeScript checks and creates a production build in `dist/`.
+The dev server runs with `vite --host 0.0.0.0`. Vercel-style single page app routing is handled by `vercel.json`, which rewrites all paths to `index.html`.
 
-```bash
-npm run preview
+## Routes
+
+- `/payments`: direct wallet transfer flow.
+- `/qr-payments`: create, preview, export, import, and manage QR payment requests.
+- `/pay?r=<payload>`: payer page opened from a QR code.
+- `/docs`: in-app technical documentation for the current build.
+
+## Network And Assets
+
+Disburse is pinned to Arc Testnet.
+
+- Chain ID: `5042002`
+- Explorer: `https://testnet.arcscan.app`
+- Faucet: `https://faucet.circle.com`
+- Native gas symbol: `USDC` with 18 decimals
+- ERC-20 USDC: `0x3600000000000000000000000000000000000000`
+- ERC-20 EURC: `0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a`
+- ERC-20 token decimals: `6`
+
+RPC failover is configured across Arc public, Blockdaemon, dRPC, and QuickNode testnet endpoints. The app probes endpoint health and displays live block, safe gas, chain, RPC, and token decimal status.
+
+## Wallet Flow
+
+The app expects an injected EIP-1193 wallet.
+
+1. `eth_requestAccounts` connects the wallet.
+2. `wallet_switchEthereumChain` switches to Arc Testnet.
+3. `wallet_addEthereumChain` is used as a fallback when Arc Testnet is not already known by the wallet.
+4. Transfers call ERC-20 `transfer(recipient, parsedAmount)`.
+5. viem estimates gas and applies the configured Arc gas-price floor.
+6. The app waits for one confirmation before returning the transaction hash.
+
+The app never receives private keys and does not custody funds.
+
+## QR Payment Requests
+
+A QR code contains a `/pay` URL with a base64url JSON payload in the `r` query parameter.
+
+Current payload fields:
+
+```ts
+{
+  version: 1,
+  id: string,
+  recipient: `0x${string}`,
+  token: "USDC" | "EURC",
+  amount: string,
+  label: string,
+  note?: string,
+  invoiceDate?: string,
+  expiresAt?: string,
+  dueAt?: string,
+  createdAt: string,
+  startBlock: string
+}
 ```
 
-Serves the production build locally.
+QR requests default to a 15 minute validity window. A payment attempt that starts before expiry can still be verified after the expiry timestamp.
 
-## Arc Testnet Configuration
+The scanned payer page locks the request details. The payer can connect a wallet, estimate, send, verify, and download the invoice after payment.
 
-Network and token configuration lives in `src/lib/arc.ts`.
+## Local Data
 
-| Setting | Value |
-| --- | --- |
-| Chain | Arc Testnet |
-| Chain ID | `5042002` |
-| RPC | `https://rpc.testnet.arc.network` |
-| Explorer | `https://testnet.arcscan.app` |
-| Faucet | `https://faucet.circle.com` |
-| USDC | `0x3600000000000000000000000000000000000000` |
-| EURC | `0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a` |
-
-Both supported ERC-20 payment tokens use 6 decimal places. Arc Testnet native gas is represented as USDC with 18 decimals.
-
-## Payment Flow
-
-1. Create a request with a recipient address, token, amount, label, and optional metadata.
-2. Share the generated `/pay?r=...` link with the payer.
-3. The payer connects a wallet and switches to Arc Testnet.
-4. The app reads balances and estimates the ERC-20 transfer.
-5. The payer signs and submits the transfer from their wallet.
-6. The app verifies the transaction receipt or scans matching token transfer logs.
-7. Verified receipts are saved to the browser ledger and linked to Arcscan.
-
-## Persistence
-
-Disburse stores data only in the current browser profile:
+QR requests and receipts are stored in browser localStorage:
 
 - `disburse.requests`
 - `disburse.receipts`
-- `disburse.theme`
 
-Use the export and import controls before clearing site data or moving to another browser profile. There is no cloud sync in this build. Legacy `arc-pay-desk.*` browser storage keys are still read during migration.
+Legacy keys are still read for migration:
 
-## Deployment Notes
+- `arc-pay-desk.requests`
+- `arc-pay-desk.receipts`
 
-The app uses client-side routing for `/docs` and `/pay`. Static hosting should rewrite unknown paths back to `index.html` so shared payment links and documentation routes load correctly.
+The QR ledger supports JSON export/import. Import recovery normalizes valid requests and receipts, drops malformed records, and regenerates receipt explorer URLs from Arcscan transaction hashes.
 
-The current build has no required environment variables. Updating chain, RPC, explorer, or token addresses requires editing `src/lib/arc.ts`.
+Direct Payments do not create QR request records. The page only keeps the latest direct transfer hash in the current browser session.
 
-## Safety Notes
+## Verification
 
-- This project is configured for Arc Testnet, not mainnet.
-- Requests are encoded in share URLs and should not include sensitive notes.
-- Verification confirms matching token transfers, but it is not a replacement for accounting controls, invoicing permissions, or backend reconciliation in production systems.
-- Browser storage can be cleared by the user, browser, or device policies.
+Verification checks Arc Testnet ERC-20 `Transfer` logs.
+
+If a request has a known transaction hash, Disburse reads that transaction receipt first. Otherwise it scans logs from the request `startBlock` to latest in 10,000-block windows.
+
+Status rules:
+
+- `paid`: exact transfer to the request recipient for the requested token amount.
+- `possible_match`: transfer to the recipient exists, but the amount differs.
+- `open`: no matching transfer was found.
+- `expired`: request is past its expiry and no pre-expiry payment attempt was submitted.
+
+Receipts contain request id, transaction hash, payer, recipient, token, amount, block number, confirmation time, and Arcscan URL.
+
+## Invoices
+
+After successful verification, Disburse can generate a local PDF invoice with:
+
+- request id
+- label and note
+- invoice date
+- amount and token
+- recipient and payer
+- transaction hash
+- block number
+- confirmation time
+- Arcscan link
+- Arc Testnet chain id
+
+Invoice files are generated in the browser. They are not uploaded or emailed by the app.

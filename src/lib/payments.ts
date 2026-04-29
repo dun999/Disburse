@@ -21,8 +21,11 @@ export type PaymentRequest = {
   amount: string;
   label: string;
   note?: string;
+  invoiceDate?: string;
+  expiresAt?: string;
   dueAt?: string;
   createdAt: string;
+  submittedAt?: string;
   startBlock: string;
   status: PaymentStatus;
   txHash?: Hash;
@@ -40,7 +43,7 @@ export type Receipt = {
   explorerUrl: string;
 };
 
-export type SharePayload = Omit<PaymentRequest, "status" | "txHash"> & {
+export type SharePayload = Omit<PaymentRequest, "status" | "txHash" | "submittedAt"> & {
   version: 1;
 };
 
@@ -54,6 +57,7 @@ export type DecodedTransfer = {
 
 const MAX_LABEL_LENGTH = 80;
 const MAX_NOTE_LENGTH = 240;
+export const PAYMENT_VALIDITY_MINUTES = 15;
 
 export function validateRecipient(value: string): Address {
   const trimmed = value.trim();
@@ -114,11 +118,56 @@ export function trimTrailingZeros(value: string): string {
   return value.replace(/0+$/, "").replace(/\.$/, "");
 }
 
+export function createExpiry(createdAt: string | Date, minutes = PAYMENT_VALIDITY_MINUTES): string {
+  const createdTime = createdAt instanceof Date ? createdAt.getTime() : new Date(createdAt).getTime();
+  if (!Number.isFinite(createdTime)) {
+    throw new Error("Payment request creation time is invalid.");
+  }
+  return new Date(createdTime + minutes * 60_000).toISOString();
+}
+
+export function normalizeInvoiceDate(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    throw new Error("Add an invoice date.");
+  }
+
+  const timestamp = new Date(`${trimmed}T00:00:00`).getTime();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(trimmed) || !Number.isFinite(timestamp)) {
+    throw new Error("Add a valid invoice date.");
+  }
+
+  return trimmed;
+}
+
 export function isPaymentExpired(request: PaymentRequest, now = new Date()): boolean {
-  if (!request.dueAt) {
+  const expiry = request.expiresAt ?? request.dueAt;
+  if (!expiry) {
     return false;
   }
-  return new Date(request.dueAt).getTime() < now.getTime();
+  return new Date(expiry).getTime() < now.getTime();
+}
+
+export function hasPreExpirySubmission(request: PaymentRequest): boolean {
+  const expiry = request.expiresAt ?? request.dueAt;
+  if (!expiry || !request.submittedAt) {
+    return false;
+  }
+
+  const expiresAt = new Date(expiry).getTime();
+  const submittedAt = new Date(request.submittedAt).getTime();
+  if (!Number.isFinite(expiresAt) || !Number.isFinite(submittedAt)) {
+    return false;
+  }
+
+  return submittedAt <= expiresAt;
+}
+
+export function isPaymentPayable(request: PaymentRequest, now = new Date()): boolean {
+  if (request.status === "paid") {
+    return false;
+  }
+  return !isPaymentExpired(request, now) || hasPreExpirySubmission(request);
 }
 
 export function refreshDerivedStatus(request: PaymentRequest, now = new Date()): PaymentRequest {
@@ -127,7 +176,12 @@ export function refreshDerivedStatus(request: PaymentRequest, now = new Date()):
   }
   return {
     ...request,
-    status: isPaymentExpired(request, now) ? "expired" : request.status === "possible_match" ? "possible_match" : "open"
+    status:
+      isPaymentExpired(request, now) && !hasPreExpirySubmission(request)
+        ? "expired"
+        : request.status === "possible_match"
+          ? "possible_match"
+          : "open"
   };
 }
 
@@ -140,6 +194,8 @@ export function encodeRequestPayload(request: PaymentRequest): string {
     amount: request.amount,
     label: request.label,
     note: request.note,
+    invoiceDate: request.invoiceDate,
+    expiresAt: request.expiresAt,
     dueAt: request.dueAt,
     createdAt: request.createdAt,
     startBlock: request.startBlock
@@ -179,6 +235,8 @@ export function decodeRequestPayload(encoded: string): PaymentRequest {
     amount: formatTokenAmount(parseTokenAmount(String(value.amount), value.token), value.token),
     label: normalizeLabel(String(value.label)),
     note: value.note ? normalizeNote(String(value.note)) : undefined,
+    invoiceDate: value.invoiceDate ? normalizeInvoiceDate(String(value.invoiceDate)) : undefined,
+    expiresAt: value.expiresAt ? String(value.expiresAt) : undefined,
     dueAt: value.dueAt ? String(value.dueAt) : undefined,
     createdAt: String(value.createdAt),
     startBlock: String(BigInt(value.startBlock)),
@@ -192,6 +250,10 @@ export function buildShareUrl(request: PaymentRequest, origin: string): string {
 
 export function toExplorerTxUrl(hash: Hash): string {
   return `${ARC_EXPLORER_URL}/tx/${hash}`;
+}
+
+export function toExplorerAddressUrl(address: Address): string {
+  return `${ARC_EXPLORER_URL}/address/${address}`;
 }
 
 export function shortAddress(value: string, prefix = 6, suffix = 4): string {

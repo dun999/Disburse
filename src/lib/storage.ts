@@ -1,5 +1,15 @@
-import type { PaymentRequest, Receipt } from "./payments";
-import { refreshDerivedStatus } from "./payments";
+import type { PaymentRequest, PaymentStatus, Receipt } from "./payments";
+import {
+  formatTokenAmount,
+  isPaymentToken,
+  normalizeInvoiceDate,
+  normalizeLabel,
+  normalizeNote,
+  parseTokenAmount,
+  refreshDerivedStatus,
+  toExplorerTxUrl,
+  validateRecipient
+} from "./payments";
 
 const REQUESTS_KEY = "disburse.requests";
 const RECEIPTS_KEY = "disburse.receipts";
@@ -13,9 +23,9 @@ export type ExportBundle = {
 };
 
 export function loadRequests(): PaymentRequest[] {
-  return readJsonFromKeys<PaymentRequest[]>([REQUESTS_KEY, LEGACY_REQUESTS_KEY], []).map((request) =>
-    refreshDerivedStatus(request)
-  );
+  return readJsonFromKeys<unknown[]>([REQUESTS_KEY, LEGACY_REQUESTS_KEY], [])
+    .map(normalizeImportedRequest)
+    .filter((request): request is PaymentRequest => Boolean(request));
 }
 
 export function saveRequests(requests: PaymentRequest[]) {
@@ -33,7 +43,9 @@ export function upsertRequest(requests: PaymentRequest[], next: PaymentRequest):
 }
 
 export function loadReceipts(): Receipt[] {
-  return readJsonFromKeys<Receipt[]>([RECEIPTS_KEY, LEGACY_RECEIPTS_KEY], []);
+  return readJsonFromKeys<unknown[]>([RECEIPTS_KEY, LEGACY_RECEIPTS_KEY], [])
+    .map(normalizeImportedReceipt)
+    .filter((receipt): receipt is Receipt => Boolean(receipt));
 }
 
 export function saveReceipts(receipts: Receipt[]) {
@@ -65,9 +77,104 @@ export function parseExportBundle(value: string): ExportBundle {
   }
   return {
     exportedAt: typeof parsed.exportedAt === "string" ? parsed.exportedAt : new Date().toISOString(),
-    requests: parsed.requests as PaymentRequest[],
-    receipts: parsed.receipts as Receipt[]
+    requests: parsed.requests
+      .map(normalizeImportedRequest)
+      .filter((request): request is PaymentRequest => Boolean(request)),
+    receipts: parsed.receipts
+      .map(normalizeImportedReceipt)
+      .filter((receipt): receipt is Receipt => Boolean(receipt))
   };
+}
+
+function normalizeImportedRequest(value: unknown): PaymentRequest | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+
+  try {
+    const token = value.token;
+    if (!isPaymentToken(token)) {
+      return undefined;
+    }
+    const request: PaymentRequest = {
+      id: readRequiredString(value, "id"),
+      recipient: validateRecipient(readRequiredString(value, "recipient")),
+      token,
+      amount: formatTokenAmount(parseTokenAmount(readRequiredString(value, "amount"), token), token),
+      label: normalizeLabel(readRequiredString(value, "label")),
+      note: readOptionalString(value, "note") ? normalizeNote(readOptionalString(value, "note") ?? "") : undefined,
+      invoiceDate: readOptionalString(value, "invoiceDate")
+        ? normalizeInvoiceDate(readOptionalString(value, "invoiceDate") ?? "")
+        : undefined,
+      expiresAt: readOptionalString(value, "expiresAt"),
+      dueAt: readOptionalString(value, "dueAt"),
+      createdAt: readRequiredString(value, "createdAt"),
+      submittedAt: readOptionalString(value, "submittedAt"),
+      startBlock: String(BigInt(readRequiredString(value, "startBlock"))),
+      status: readPaymentStatus(value.status),
+      txHash: readHash(value.txHash)
+    };
+
+    return refreshDerivedStatus(request);
+  } catch {
+    return undefined;
+  }
+}
+
+function normalizeImportedReceipt(value: unknown): Receipt | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+
+  try {
+    const token = value.token;
+    const txHash = readHash(value.txHash);
+    if (!isPaymentToken(token) || !txHash) {
+      return undefined;
+    }
+
+    return {
+      requestId: readRequiredString(value, "requestId"),
+      txHash,
+      from: validateRecipient(readRequiredString(value, "from")),
+      to: validateRecipient(readRequiredString(value, "to")),
+      token,
+      amount: formatTokenAmount(parseTokenAmount(readRequiredString(value, "amount"), token), token),
+      blockNumber: String(BigInt(readRequiredString(value, "blockNumber"))),
+      confirmedAt: readRequiredString(value, "confirmedAt"),
+      explorerUrl: toExplorerTxUrl(txHash)
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function readPaymentStatus(value: unknown): PaymentStatus {
+  return value === "paid" || value === "possible_match" || value === "expired" ? value : "open";
+}
+
+function readHash(value: unknown): `0x${string}` | undefined {
+  if (typeof value !== "string" || !/^0x[a-fA-F0-9]{64}$/.test(value)) {
+    return undefined;
+  }
+  return value as `0x${string}`;
+}
+
+function readRequiredString(record: Record<string, unknown>, key: string): string {
+  const value = record[key];
+  if (typeof value !== "string" || !value.trim()) {
+    throw new Error(`Missing ${key}.`);
+  }
+  return value;
+}
+
+function readOptionalString(record: Record<string, unknown>, key: string): string | undefined {
+  const value = record[key];
+  return typeof value === "string" && value.trim() ? value : undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }
 
 function readJson<T>(key: string, fallback: T): T {
