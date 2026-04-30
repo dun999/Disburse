@@ -1,8 +1,8 @@
 import { encodeAbiParameters, encodeEventTopics, type Log } from "viem";
 import { describe, expect, it } from "vitest";
-import { erc20Abi, TOKENS } from "../src/lib/arc";
-import { parseTokenAmount, type PaymentRequest } from "../src/lib/payments";
-import { resolveSubmittedReceiptConfirmation } from "./qr";
+import { erc20Abi, TOKENS } from "../src/lib/arc.js";
+import { parseTokenAmount, type PaymentRequest } from "../src/lib/payments.js";
+import { resolveSubmittedReceiptConfirmation } from "./qr.js";
 
 const recipient = "0x1111111111111111111111111111111111111111";
 const sender = "0x2222222222222222222222222222222222222222";

@@ -32,3 +32,5 @@ Thumbs.db
 # TypeScript and Vite cache
 *.tsbuildinfo
 .vite/
+
+.vercel

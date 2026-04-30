@@ -1,5 +1,5 @@
 import type { Hash } from "viem";
-import type { PaymentRequest, PaymentStatus, PaymentToken, Receipt } from "./payments";
+import type { PaymentRequest, PaymentStatus, PaymentToken, Receipt } from "./payments.js";
 
 export type QrRealtimeEventType = "submitted" | "paid" | "failed" | "expired";
 

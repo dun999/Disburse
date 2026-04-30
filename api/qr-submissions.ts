@@ -1,5 +1,5 @@
-import { assertMethod, readJsonBody, sendError, sendJson, type ApiRequest, type ApiResponse } from "../server/http";
-import { readHash, readRequestId, recordStoredQrSubmission } from "../server/qr";
+import { assertMethod, readJsonBody, sendError, sendJson, type ApiRequest, type ApiResponse } from "../server/http.js";
+import { readHash, readRequestId, recordStoredQrSubmission } from "../server/qr.js";
 
 export default async function handler(request: ApiRequest, response: ApiResponse) {
   try {

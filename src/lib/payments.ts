@@ -8,7 +8,7 @@ import {
   type Hash,
   type Log
 } from "viem";
-import { ARC_EXPLORER_URL, TOKENS, erc20Abi } from "./arc";
+import { ARC_EXPLORER_URL, TOKENS, erc20Abi } from "./arc.js";
 
 export type PaymentToken = keyof typeof TOKENS;
 

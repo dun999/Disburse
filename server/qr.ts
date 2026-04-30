@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { Hash, Log, TransactionReceipt } from "viem";
-import { publicClient, TOKENS } from "../src/lib/arc";
+import { publicClient, TOKENS } from "../src/lib/arc.js";
 import {
   createExpiry,
   formatTokenAmount,
@@ -19,7 +19,7 @@ import {
   type PaymentRequest,
   type PaymentToken,
   type Receipt
-} from "../src/lib/payments";
+} from "../src/lib/payments.js";
 import {
   paymentRequestToRow,
   receiptToRow,
@@ -29,9 +29,9 @@ import {
   type PaymentRequestRow,
   type QrRealtimeEvent,
   type QrStatusPayload
-} from "../src/lib/realtime";
-import { HttpError } from "./http";
-import { getSupabaseAdmin } from "./supabase";
+} from "../src/lib/realtime.js";
+import { HttpError } from "./http.js";
+import { getSupabaseAdmin } from "./supabase.js";
 
 export type CreateQrRequestInput = {
   recipient: string;
