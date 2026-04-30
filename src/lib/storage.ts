@@ -2,6 +2,7 @@ import type { PaymentRequest, PaymentStatus, Receipt } from "./payments";
 import {
   formatTokenAmount,
   isPaymentToken,
+  normalizeDateTime,
   normalizeInvoiceDate,
   normalizeLabel,
   normalizeNote,
@@ -96,6 +97,11 @@ function normalizeImportedRequest(value: unknown): PaymentRequest | undefined {
     if (!isPaymentToken(token)) {
       return undefined;
     }
+    const startBlock = BigInt(readRequiredString(value, "startBlock"));
+    if (startBlock < 0n) {
+      return undefined;
+    }
+
     const request: PaymentRequest = {
       id: readRequiredString(value, "id"),
       recipient: validateRecipient(readRequiredString(value, "recipient")),
@@ -106,11 +112,17 @@ function normalizeImportedRequest(value: unknown): PaymentRequest | undefined {
       invoiceDate: readOptionalString(value, "invoiceDate")
         ? normalizeInvoiceDate(readOptionalString(value, "invoiceDate") ?? "")
         : undefined,
-      expiresAt: readOptionalString(value, "expiresAt"),
-      dueAt: readOptionalString(value, "dueAt"),
-      createdAt: readRequiredString(value, "createdAt"),
-      submittedAt: readOptionalString(value, "submittedAt"),
-      startBlock: String(BigInt(readRequiredString(value, "startBlock"))),
+      expiresAt: readOptionalString(value, "expiresAt")
+        ? normalizeDateTime(readOptionalString(value, "expiresAt") ?? "", "expiry time")
+        : undefined,
+      dueAt: readOptionalString(value, "dueAt")
+        ? normalizeDateTime(readOptionalString(value, "dueAt") ?? "", "due time")
+        : undefined,
+      createdAt: normalizeDateTime(readRequiredString(value, "createdAt"), "creation time"),
+      submittedAt: readOptionalString(value, "submittedAt")
+        ? normalizeDateTime(readOptionalString(value, "submittedAt") ?? "", "submission time")
+        : undefined,
+      startBlock: String(startBlock),
       status: readPaymentStatus(value.status),
       txHash: readHash(value.txHash)
     };
@@ -132,6 +144,10 @@ function normalizeImportedReceipt(value: unknown): Receipt | undefined {
     if (!isPaymentToken(token) || !txHash) {
       return undefined;
     }
+    const blockNumber = BigInt(readRequiredString(value, "blockNumber"));
+    if (blockNumber < 0n) {
+      return undefined;
+    }
 
     return {
       requestId: readRequiredString(value, "requestId"),
@@ -140,8 +156,8 @@ function normalizeImportedReceipt(value: unknown): Receipt | undefined {
       to: validateRecipient(readRequiredString(value, "to")),
       token,
       amount: formatTokenAmount(parseTokenAmount(readRequiredString(value, "amount"), token), token),
-      blockNumber: String(BigInt(readRequiredString(value, "blockNumber"))),
-      confirmedAt: readRequiredString(value, "confirmedAt"),
+      blockNumber: String(blockNumber),
+      confirmedAt: normalizeDateTime(readRequiredString(value, "confirmedAt"), "confirmation time"),
       explorerUrl: toExplorerTxUrl(txHash)
     };
   } catch {

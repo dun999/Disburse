@@ -1,10 +1,10 @@
 import {
   createPublicClient,
-  createWalletClient,
-  custom,
+  encodeFunctionData,
   formatUnits,
   getAddress,
   http,
+  numberToHex,
   type Address,
   type EIP1193Provider,
   type Hash
@@ -94,6 +94,18 @@ export type BlockRange = {
   fromBlock: bigint;
   toBlock: bigint;
 };
+
+export type WalletTransferTransaction = {
+  from: Address;
+  to: Address;
+  data: `0x${string}`;
+  value: "0x0";
+  gas?: `0x${string}`;
+  gasPrice?: `0x${string}`;
+};
+
+export const WALLET_APPROVAL_TIMEOUT_MS = 5 * 60_000;
+export const RECEIPT_WAIT_TIMEOUT_MS = 120_000;
 
 export function getInjectedProvider(): EthereumProvider | undefined {
   if (typeof window === "undefined") {
@@ -192,38 +204,19 @@ export async function sendTokenTransfer(
   transferRequest: TokenTransfer,
   estimate?: TransferEstimate
 ): Promise<Hash> {
-  const walletClient = createWalletClient({
-    account,
-    chain: arcTestnet,
-    transport: custom(provider)
-  });
-
-  const amount = parseTokenAmount(transferRequest.amount, transferRequest.token);
-  const transfer = {
-    account,
-    chain: arcTestnet,
-    address: TOKENS[transferRequest.token].address,
-    abi: erc20Abi,
-    functionName: "transfer",
-    args: [transferRequest.recipient, amount]
-  } as const;
-
-  const hash = await walletClient.writeContract(
-    estimate
-      ? {
-          ...transfer,
-          gas: estimate.gas,
-          gasPrice: estimate.gasPrice
-        }
-      : transfer
-  );
-
-  await publicClient.waitForTransactionReceipt({
-    hash,
-    confirmations: 1
-  });
+  const hash = await submitTokenTransfer(provider, account, transferRequest, estimate);
+  await waitForTransactionConfirmation(hash);
 
   return hash;
+}
+
+export async function submitTokenTransfer(
+  provider: EthereumProvider,
+  account: Address,
+  transferRequest: TokenTransfer,
+  estimate?: TransferEstimate
+): Promise<Hash> {
+  return requestWalletTransaction(provider, buildErc20TransferTransaction(account, transferRequest, estimate));
 }
 
 export async function sendPayment(
@@ -235,6 +228,75 @@ export async function sendPayment(
   return sendTokenTransfer(provider, account, request, estimate);
 }
 
+export async function submitPayment(
+  provider: EthereumProvider,
+  account: Address,
+  request: PaymentRequest,
+  estimate?: TransferEstimate
+): Promise<Hash> {
+  return submitTokenTransfer(provider, account, request, estimate);
+}
+
+export function buildErc20TransferTransaction(
+  account: Address,
+  transferRequest: TokenTransfer,
+  estimate?: TransferEstimate
+): WalletTransferTransaction {
+  const amount = parseTokenAmount(transferRequest.amount, transferRequest.token);
+  return {
+    from: account,
+    to: TOKENS[transferRequest.token].address,
+    data: encodeFunctionData({
+      abi: erc20Abi,
+      functionName: "transfer",
+      args: [transferRequest.recipient, amount]
+    }),
+    value: "0x0",
+    ...(estimate
+      ? {
+          gas: numberToHex(estimate.gas),
+          gasPrice: numberToHex(estimate.gasPrice)
+        }
+      : {})
+  };
+}
+
+async function requestWalletTransaction(
+  provider: EthereumProvider,
+  transaction: WalletTransferTransaction
+): Promise<Hash> {
+  const chainId = await getWalletChainId(provider);
+  if (chainId !== ARC_CHAIN_ID) {
+    throw new Error("Wallet is not on Arc Testnet. Switch networks, then try again.");
+  }
+
+  const hash = await withTimeout(
+    provider.request({
+      method: "eth_sendTransaction",
+      params: [transaction]
+    }),
+    WALLET_APPROVAL_TIMEOUT_MS,
+    "Wallet approval did not open or return a transaction hash. Reopen this request in your wallet browser, then try Pay request again."
+  );
+
+  if (typeof hash !== "string" || !/^0x[a-fA-F0-9]{64}$/.test(hash)) {
+    throw new Error("Wallet did not return a valid transaction hash.");
+  }
+
+  return hash as Hash;
+}
+
+export async function waitForTransactionConfirmation(hash: Hash): Promise<void> {
+  await withTimeout(
+    publicClient.waitForTransactionReceipt({
+      hash,
+      confirmations: 1
+    }),
+    RECEIPT_WAIT_TIMEOUT_MS,
+    `Transaction ${hash} was submitted, but Arc Testnet did not return a receipt yet. Use Verify in a minute.`
+  );
+}
+
 export async function verifyPayment(request: PaymentRequest): Promise<VerificationResult> {
   if (request.txHash) {
     try {
@@ -242,9 +304,11 @@ export async function verifyPayment(request: PaymentRequest): Promise<Verificati
       const transfer = receipt.logs
         .filter((log) => log.address.toLowerCase() === TOKENS[request.token].address.toLowerCase())
         .map(decodeTransferLog)
-        .find((decoded): decoded is DecodedTransfer => Boolean(decoded));
+        .find(
+          (decoded): decoded is DecodedTransfer => Boolean(decoded && transferMatchesRequest(request, decoded))
+        );
 
-      if (transfer && transferMatchesRequest(request, transfer)) {
+      if (transfer) {
         return {
           status: "paid",
           receipt: makeReceipt(request, transfer),
@@ -487,4 +551,19 @@ function readProviderErrorCode(error: unknown): number | undefined {
     return Number((error as { code?: unknown }).code);
   }
   return undefined;
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => reject(new Error(message)), timeoutMs);
+  });
+
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
+  }
 }

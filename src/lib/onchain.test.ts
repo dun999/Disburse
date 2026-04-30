@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { parseGwei, type Address } from "viem";
-import { ARC_MIN_GAS_PRICE } from "./arc";
+import { ARC_MIN_GAS_PRICE, TOKENS } from "./arc";
 import {
   applyArcGasFloor,
+  buildErc20TransferTransaction,
   buildLogBlockRanges,
   resolveTransferVerification,
   selectActiveRpcEndpoint,
@@ -39,6 +40,33 @@ describe("Arc gas policy", () => {
     expect(applyArcGasFloor(parseGwei("1"))).toBe(ARC_MIN_GAS_PRICE);
     expect(applyArcGasFloor(parseGwei("20"))).toBe(ARC_MIN_GAS_PRICE);
     expect(applyArcGasFloor(parseGwei("25"))).toBe(parseGwei("25"));
+  });
+});
+
+describe("wallet transfer transaction", () => {
+  it("builds a raw ERC-20 transfer request for mobile wallet providers", () => {
+    const transaction = buildErc20TransferTransaction(sender, baseRequest, {
+      gas: 55_349n,
+      gasPrice: parseGwei("20"),
+      fee: "0.00110698"
+    });
+
+    expect(transaction).toMatchObject({
+      from: sender,
+      to: TOKENS.USDC.address,
+      value: "0x0",
+      gas: "0xd835",
+      gasPrice: "0x4a817c800"
+    });
+    expect(transaction.data).toMatch(/^0xa9059cbb/);
+    expect(transaction.data).toContain(recipient.slice(2).toLowerCase());
+  });
+
+  it("lets the wallet estimate gas when no app estimate is provided", () => {
+    const transaction = buildErc20TransferTransaction(sender, baseRequest);
+
+    expect(transaction.gas).toBeUndefined();
+    expect(transaction.gasPrice).toBeUndefined();
   });
 });
 

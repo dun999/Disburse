@@ -58,9 +58,9 @@ The app expects an injected EIP-1193 wallet.
 1. `eth_requestAccounts` connects the wallet.
 2. `wallet_switchEthereumChain` switches to Arc Testnet.
 3. `wallet_addEthereumChain` is used as a fallback when Arc Testnet is not already known by the wallet.
-4. Transfers call ERC-20 `transfer(recipient, parsedAmount)`.
+4. Transfers submit `eth_sendTransaction` with ERC-20 `transfer(recipient, parsedAmount)` calldata.
 5. viem estimates gas and applies the configured Arc gas-price floor.
-6. The app waits for one confirmation before returning the transaction hash.
+6. The app saves the transaction hash as soon as the wallet returns it, then waits for one confirmation.
 
 The app never receives private keys and does not custody funds.
 

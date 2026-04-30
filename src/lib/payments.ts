@@ -132,12 +132,35 @@ export function normalizeInvoiceDate(value: string): string {
     throw new Error("Add an invoice date.");
   }
 
-  const timestamp = new Date(`${trimmed}T00:00:00`).getTime();
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(trimmed) || !Number.isFinite(timestamp)) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(trimmed);
+  if (!match) {
+    throw new Error("Add a valid invoice date.");
+  }
+
+  const [, yearValue, monthValue, dayValue] = match;
+  const year = Number(yearValue);
+  const month = Number(monthValue);
+  const day = Number(dayValue);
+  const parsed = new Date(Date.UTC(year, month - 1, day));
+
+  if (
+    parsed.getUTCFullYear() !== year ||
+    parsed.getUTCMonth() !== month - 1 ||
+    parsed.getUTCDate() !== day
+  ) {
     throw new Error("Add a valid invoice date.");
   }
 
   return trimmed;
+}
+
+export function normalizeDateTime(value: string, fieldName: string): string {
+  const trimmed = value.trim();
+  const timestamp = Date.parse(trimmed);
+  if (!trimmed || !Number.isFinite(timestamp)) {
+    throw new Error(`Payment request ${fieldName} is invalid.`);
+  }
+  return new Date(timestamp).toISOString();
 }
 
 export function isPaymentExpired(request: PaymentRequest, now = new Date()): boolean {
@@ -145,7 +168,11 @@ export function isPaymentExpired(request: PaymentRequest, now = new Date()): boo
   if (!expiry) {
     return false;
   }
-  return new Date(expiry).getTime() < now.getTime();
+  const expiryTime = new Date(expiry).getTime();
+  if (!Number.isFinite(expiryTime)) {
+    return true;
+  }
+  return expiryTime < now.getTime();
 }
 
 export function hasPreExpirySubmission(request: PaymentRequest): boolean {
@@ -228,6 +255,11 @@ export function decodeRequestPayload(encoded: string): PaymentRequest {
     throw new Error("Unsupported payment token.");
   }
 
+  const startBlock = BigInt(value.startBlock);
+  if (startBlock < 0n) {
+    throw new Error("Payment request start block is invalid.");
+  }
+
   return {
     id: String(value.id),
     recipient: validateRecipient(value.recipient),
@@ -236,12 +268,25 @@ export function decodeRequestPayload(encoded: string): PaymentRequest {
     label: normalizeLabel(String(value.label)),
     note: value.note ? normalizeNote(String(value.note)) : undefined,
     invoiceDate: value.invoiceDate ? normalizeInvoiceDate(String(value.invoiceDate)) : undefined,
-    expiresAt: value.expiresAt ? String(value.expiresAt) : undefined,
-    dueAt: value.dueAt ? String(value.dueAt) : undefined,
-    createdAt: String(value.createdAt),
-    startBlock: String(BigInt(value.startBlock)),
+    expiresAt: value.expiresAt ? normalizeDateTime(String(value.expiresAt), "expiry time") : undefined,
+    dueAt: value.dueAt ? normalizeDateTime(String(value.dueAt), "due time") : undefined,
+    createdAt: normalizeDateTime(String(value.createdAt), "creation time"),
+    startBlock: String(startBlock),
     status: "open"
   };
+}
+
+export function mergeScannedRequest(existing: PaymentRequest | undefined, scanned: PaymentRequest): PaymentRequest {
+  if (!existing || !hasSameRequestPayload(existing, scanned)) {
+    return scanned;
+  }
+
+  return refreshDerivedStatus({
+    ...scanned,
+    submittedAt: existing.submittedAt,
+    status: existing.status,
+    txHash: existing.txHash
+  });
 }
 
 export function buildShareUrl(request: PaymentRequest, origin: string): string {
@@ -323,4 +368,24 @@ export function decodeTransferLog(log: Log): DecodedTransfer | undefined {
   } catch {
     return undefined;
   }
+}
+
+function hasSameRequestPayload(left: PaymentRequest, right: PaymentRequest): boolean {
+  return (
+    left.id === right.id &&
+    left.recipient.toLowerCase() === right.recipient.toLowerCase() &&
+    left.token === right.token &&
+    left.amount === right.amount &&
+    left.label === right.label &&
+    optionalString(left.note) === optionalString(right.note) &&
+    optionalString(left.invoiceDate) === optionalString(right.invoiceDate) &&
+    optionalString(left.expiresAt) === optionalString(right.expiresAt) &&
+    optionalString(left.dueAt) === optionalString(right.dueAt) &&
+    left.createdAt === right.createdAt &&
+    left.startBlock === right.startBlock
+  );
+}
+
+function optionalString(value: string | undefined): string {
+  return value ?? "";
 }

@@ -10,6 +10,7 @@ import {
   formatTokenAmount,
   isPaymentExpired,
   isPaymentPayable,
+  mergeScannedRequest,
   normalizeInvoiceDate,
   parseTokenAmount,
   transferMatchesRequest,
@@ -33,6 +34,10 @@ const baseRequest: PaymentRequest = {
   startBlock: "700",
   status: "open"
 };
+
+function encodeRawPayload(value: unknown): string {
+  return Buffer.from(JSON.stringify(value), "utf8").toString("base64url");
+}
 
 describe("payment amount conversion", () => {
   it("parses and formats 6-decimal stablecoin amounts", () => {
@@ -79,6 +84,7 @@ describe("QR request metadata", () => {
     expect(normalizeInvoiceDate("2026-04-29")).toBe("2026-04-29");
     expect(createExpiry("2026-04-29T10:00:00.000Z")).toBe("2026-04-29T10:15:00.000Z");
     expect(() => normalizeInvoiceDate("04/29/26")).toThrow("valid invoice date");
+    expect(() => normalizeInvoiceDate("2026-02-31")).toThrow("valid invoice date");
   });
 
   it("blocks expired QR requests unless a payment attempt started before expiry", () => {
@@ -94,6 +100,47 @@ describe("QR request metadata", () => {
         afterExpiry
       )
     ).toBe(true);
+  });
+});
+
+describe("scanned request recovery", () => {
+  it("preserves a submitted local transaction when the same QR is reopened", () => {
+    const txHash = `0x${"b".repeat(64)}` as `0x${string}`;
+    const scanned = decodeRequestPayload(encodeRequestPayload(baseRequest));
+    const merged = mergeScannedRequest(
+      {
+        ...baseRequest,
+        submittedAt: "2026-04-28T00:03:00.000Z",
+        status: "paid",
+        txHash
+      },
+      scanned
+    );
+
+    expect(merged).toMatchObject({
+      id: baseRequest.id,
+      status: "paid",
+      submittedAt: "2026-04-28T00:03:00.000Z",
+      txHash
+    });
+  });
+
+  it("rejects malformed request date fields from QR payloads", () => {
+    expect(() =>
+      decodeRequestPayload(
+        encodeRawPayload({
+          version: 1,
+          id: baseRequest.id,
+          recipient: baseRequest.recipient,
+          token: baseRequest.token,
+          amount: baseRequest.amount,
+          label: baseRequest.label,
+          expiresAt: "not-a-date",
+          createdAt: baseRequest.createdAt,
+          startBlock: baseRequest.startBlock
+        })
+      )
+    ).toThrow("expiry time");
   });
 });
 
