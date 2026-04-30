@@ -4,6 +4,7 @@ import {
   formatUnits,
   getAddress,
   http,
+  numberToHex,
   parseUnits,
   type Address,
   type EIP1193Provider,
@@ -112,6 +113,7 @@ export type WalletTransferTransaction = {
   to: Address;
   data: `0x${string}`;
   value: "0x0";
+  nonce?: `0x${string}`;
 };
 
 export const WALLET_APPROVAL_TIMEOUT_MS = 5 * 60_000;
@@ -226,7 +228,8 @@ export async function submitTokenTransfer(
   account: Address,
   transferRequest: TokenTransfer
 ): Promise<Hash> {
-  return requestWalletTransaction(provider, buildErc20TransferTransaction(account, transferRequest));
+  const nonce = await readPendingNonce(account);
+  return requestWalletTransaction(provider, buildErc20TransferTransaction(account, transferRequest, nonce));
 }
 
 export async function sendPayment(
@@ -247,7 +250,8 @@ export async function submitPayment(
 
 export function buildErc20TransferTransaction(
   account: Address,
-  transferRequest: TokenTransfer
+  transferRequest: TokenTransfer,
+  nonce?: number
 ): WalletTransferTransaction {
   const amount = parseTokenAmount(transferRequest.amount, transferRequest.token);
   return {
@@ -258,8 +262,16 @@ export function buildErc20TransferTransaction(
       functionName: "transfer",
       args: [transferRequest.recipient, amount]
     }),
-    value: "0x0"
+    value: "0x0",
+    ...(nonce === undefined ? {} : { nonce: numberToHex(nonce) })
   };
+}
+
+export async function readPendingNonce(account: Address): Promise<number> {
+  return publicClient.getTransactionCount({
+    address: account,
+    blockTag: "pending"
+  });
 }
 
 export function getSpendabilityCheck(

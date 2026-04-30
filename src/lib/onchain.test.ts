@@ -60,6 +60,14 @@ describe("wallet transfer transaction", () => {
     expect(transaction.data).toMatch(/^0xa9059cbb/);
     expect(transaction.data).toContain(recipient.slice(2).toLowerCase());
   });
+
+  it("pins the pending account nonce without app-owned gas overrides", () => {
+    const transaction = buildErc20TransferTransaction(sender, baseRequest, 0);
+
+    expect(transaction.nonce).toBe("0x0");
+    expect(transaction).not.toHaveProperty("gas");
+    expect(transaction).not.toHaveProperty("gasPrice");
+  });
 });
 
 describe("payer spendability checks", () => {
