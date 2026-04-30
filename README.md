@@ -31,6 +31,8 @@ npm run build
 
 The dev server runs with `vite --host 0.0.0.0`. Vercel-style single page app routing is handled by `vercel.json`, which rewrites all paths to `index.html`.
 
+Serve documentation from `docs.disburse.online` on the same Vercel project. The app treats that subdomain as the documentation site.
+
 For Supabase-backed QR realtime and API routes, run the app through Vercel locally or deploy it to Vercel so `/api/*` functions are available. Plain Vite dev still supports the previous local-only QR fallback.
 
 Required realtime environment variables:
@@ -48,7 +50,7 @@ Apply `supabase/migrations/202604300001_qr_realtime.sql` to create the payment r
 - `/payments`: direct wallet transfer flow.
 - `/qr-payments`: create, preview, export, import, and manage QR payment requests.
 - `/pay?r=<payload>`: payer page opened from a QR code.
-- `/docs`: in-app technical documentation for the current build.
+- `docs.disburse.online`: project documentation for the current build.
 
 ## Network And Assets
 

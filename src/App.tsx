@@ -100,13 +100,19 @@ type PayLifecycle = "idle" | "preparing" | "awaiting_wallet" | "submitted" | "co
 type NavigateHandler = (event: MouseEvent<HTMLAnchorElement>, target: string) => void;
 type DocsSection = {
   title: string;
-  body: string;
+  body: string[];
   points?: string[];
   code?: string;
+};
+type DocsSummaryItem = {
+  label: string;
+  value: string;
 };
 
 const THEME_KEY = "disburse.theme";
 const LEGACY_THEME_KEY = "arc-pay-desk.theme";
+const LEGACY_DOCS_PATH = "/docs";
+const PRODUCTION_DOCS_HOSTNAME = "docs.disburse.online";
 
 const emptyDirectForm: DirectFormState = {
   recipient: "",
@@ -153,30 +159,36 @@ const faqItems = [
 
 const docsSections: DocsSection[] = [
   {
-    title: "Current build",
-    body:
-      "Disburse is a client-side Arc Testnet payment console. It has direct wallet transfers, wallet QR requests, local receipt storage, import/export, and PDF invoice generation after on-chain verification.",
+    title: "Project scope",
+    body: [
+      "Disburse is a non-custodial payment console for Arc Testnet. It is built for two practical tasks: sending a stablecoin transfer from an injected wallet, and issuing a QR payment request that another wallet can open and pay.",
+      "The current build is intentionally narrow. It does not hold balances, collect private keys, or operate a custodial account. The browser prepares the request, the wallet signs the transaction, and payment status is verified against Arc Testnet data."
+    ],
     points: [
-      "Pages: /payments, /qr-payments, /pay, and /docs.",
-      "Supported actions: connect an injected EIP-1193 wallet, switch to Arc Testnet, estimate gas, send ERC-20 transfers, verify requests, and download invoices.",
-      "Not active in this release: MPP rails, backend 402 enforcement, custodial balances, Permit2, and server-side replay tracking."
+      "Primary app routes: /payments, /qr-payments, and /pay.",
+      `Documentation is served from ${PRODUCTION_DOCS_HOSTNAME}.`,
+      "Supported actions: wallet connection, Arc Testnet switching, gas estimation, ERC-20 transfers, QR request creation, transfer verification, import/export, and invoice download.",
+      "Out of scope for this release: custodial balances, Permit2, backend-enforced 402 flows, MPP rails, and server-side replay protection."
     ]
   },
   {
-    title: "Payment modes",
-    body:
-      "The product has two wallet-based flows. Direct Payments send immediately from the connected wallet. QR Payments create a fixed request URL that another wallet can open and pay.",
+    title: "Payment flows",
+    body: [
+      "Disburse separates immediate transfers from request-based payments. Direct Payments are used when the sender already knows the recipient, token, and amount. QR Payments are used when a requester wants to publish a fixed request for someone else to pay.",
+      "A scanned QR request opens the payer page with the request details locked. The payer can connect a wallet, estimate the transfer, submit the transaction, verify the result, and download the invoice after confirmation."
+    ],
     points: [
-      "Payments: sender enters recipient, token, and amount, then signs a token transfer.",
-      "QR Payments: requester enters recipient, token, amount, label, note, and invoice date, then shares a QR code.",
-      "Pay page: payer sees locked request details, connects a wallet, estimates, pays, verifies, and can download the invoice.",
+      "Payments: the sender enters recipient, token, and amount, then signs a wallet transfer.",
+      "QR Payments: the requester enters recipient, token, amount, label, note, and invoice date, then shares a request URL as a QR code.",
       "Direct Payments do not create QR request records in the local ledger."
     ]
   },
   {
-    title: "Chain and assets",
-    body:
+    title: "Network and assets",
+    body: [
       "The app is pinned to Arc Testnet. Native gas is represented as USDC with 18 decimals, while supported ERC-20 payment amounts use 6 decimals.",
+      "RPC access is handled through a small failover list. The interface reports the active endpoint, latest block, safe gas price, chain id, and token decimal checks so a user can see whether the network path is healthy before signing."
+    ],
     points: [
       `Chain ID: ${ARC_CHAIN_ID}`,
       `RPC: ${new URL(ARC_RPC_URL).host}`,
@@ -186,9 +198,11 @@ const docsSections: DocsSection[] = [
     ]
   },
   {
-    title: "QR payload",
-    body:
-      "A QR code contains a /pay URL with a base64url JSON payload in the r query parameter. The payload reconstructs the request only; private keys, balances, and wallet approvals never enter the QR payload.",
+    title: "QR request payload",
+    body: [
+      "A QR code contains a /pay URL with a base64url JSON payload in the r query parameter. The payload is only a portable request description; it never contains a private key, wallet approval, token balance, or signed transaction.",
+      "The request records the token, amount, recipient, label, creation time, and start block. That start block limits verification to transfers that happened after the request was created."
+    ],
     points: [
       "Required fields: version, id, recipient, token, amount, label, createdAt, and startBlock.",
       "Optional fields: note, invoiceDate, expiresAt, and dueAt.",
@@ -198,8 +212,10 @@ const docsSections: DocsSection[] = [
   },
   {
     title: "Wallet execution",
-    body:
+    body: [
       "Payments are standard ERC-20 transfer calls signed by the connected wallet. The app estimates gas with viem, applies Arc's configured gas-price floor, saves the wallet transaction hash as soon as it is submitted, and then waits for confirmation.",
+      "The wallet remains the authority for signing. Disburse prepares calldata and displays checks, but the final approval happens inside the wallet."
+    ],
     points: [
       "Connect: eth_requestAccounts.",
       "Network: wallet_switchEthereumChain, with wallet_addEthereumChain fallback for Arc Testnet.",
@@ -208,9 +224,11 @@ const docsSections: DocsSection[] = [
     ]
   },
   {
-    title: "Local ledger",
-    body:
-      "QR requests and receipts live in browser localStorage and can be exported as JSON or imported back into the app. Import recovery normalizes valid records and drops malformed entries.",
+    title: "Local ledger and realtime",
+    body: [
+      "QR requests and receipts are stored in browser localStorage so the requester can manage work without creating an account. The ledger supports JSON export and import for backup or migration.",
+      "When Supabase is configured, QR requests can also be written through Vercel API functions. Realtime events allow the requester view to close a QR code when the payer submits, confirms, fails, or expires a request."
+    ],
     points: [
       "Storage keys: disburse.requests and disburse.receipts.",
       "Legacy keys are still read: arc-pay-desk.requests and arc-pay-desk.receipts.",
@@ -220,8 +238,10 @@ const docsSections: DocsSection[] = [
   },
   {
     title: "Invoice output",
-    body:
-      "After the payer confirms and the transfer is verified from Arc Testnet logs, the pay page can generate a local PDF invoice.",
+    body: [
+      "After the payer confirms and the transfer is verified from Arc Testnet data, the pay page can generate a local PDF invoice.",
+      "Invoices are produced in the browser. They are not uploaded by the app and are not emailed by the server in this build."
+    ],
     points: [
       "Invoice includes tx hash, block, amount, label, note, invoice date, payer, recipient, confirmation time, and Arcscan link.",
       "Invoice date is display metadata, not the payment expiry.",
@@ -230,14 +250,35 @@ const docsSections: DocsSection[] = [
   },
   {
     title: "Verification",
-    body:
+    body: [
       "Verification first checks a known transaction hash. If no hash is present, it scans ERC-20 Transfer logs in 10,000-block windows from the request start block to latest and compares recipient plus exact token amount.",
+      "A request is marked paid only when the token contract, recipient, and amount match. Transfers to the right recipient with a different amount are surfaced separately so the user can review them without treating them as settled."
+    ],
     points: [
       "Paid: exact transfer to the recipient for the requested token amount.",
       "Possible match: transfer to the recipient exists, but the amount differs.",
       "Open: no matching transfer was found from the request start block."
     ],
     code: "match = log.address == token && log.args.to == recipient && log.args.value == parseUnits(amount, token.decimals)"
+  }
+];
+
+const docsSummaryItems: DocsSummaryItem[] = [
+  {
+    label: "Network",
+    value: `Arc Testnet ${ARC_CHAIN_ID}`
+  },
+  {
+    label: "Assets",
+    value: "USDC and EURC"
+  },
+  {
+    label: "Custody",
+    value: "Wallet signed, non-custodial"
+  },
+  {
+    label: "Receipts",
+    value: "Verified from Arc Testnet logs"
   }
 ];
 
@@ -249,7 +290,7 @@ function getInitialTheme(): Theme {
 }
 
 function getInitialPage(): Page {
-  if (window.location.pathname === "/docs") {
+  if (isDocsHostname()) {
     return "docs";
   }
   if (window.location.pathname === "/qr-payments") {
@@ -259,6 +300,66 @@ function getInitialPage(): Page {
     return "pay";
   }
   return "payments";
+}
+
+function isDocsHostname(hostname = window.location.hostname): boolean {
+  return hostname === "docs.localhost" || hostname === PRODUCTION_DOCS_HOSTNAME;
+}
+
+function stripPublicSubdomain(hostname: string): string {
+  if (hostname.startsWith("docs.")) {
+    return hostname.slice("docs.".length);
+  }
+  if (hostname.startsWith("www.")) {
+    return hostname.slice("www.".length);
+  }
+  return hostname;
+}
+
+function getDocsHostname(hostname: string): string {
+  if (isDocsHostname(hostname)) {
+    return hostname;
+  }
+  if (hostname === "localhost" || hostname === "127.0.0.1" || hostname === "0.0.0.0") {
+    return "docs.localhost";
+  }
+  return PRODUCTION_DOCS_HOSTNAME;
+}
+
+function getOriginForHostname(hostname: string): string {
+  const port = window.location.port ? `:${window.location.port}` : "";
+  return `${window.location.protocol}//${hostname}${port}`;
+}
+
+function getDocsHref(): string {
+  const hostname = window.location.hostname;
+  if (isDocsHostname(hostname)) {
+    return "/";
+  }
+  return `${getOriginForHostname(getDocsHostname(hostname))}/`;
+}
+
+function getAppHref(path: string): string {
+  const hostname = window.location.hostname;
+  if (!isDocsHostname(hostname)) {
+    return path;
+  }
+  return `${getOriginForHostname(stripPublicSubdomain(hostname))}${path}`;
+}
+
+function getInternalTargetPath(target: string): string | undefined {
+  const url = new URL(target, window.location.href);
+  if (url.origin !== window.location.origin) {
+    return undefined;
+  }
+  return `${url.pathname}${url.search}${url.hash}`;
+}
+
+function shouldRedirectLegacyDocsRoute(): boolean {
+  if (isDocsHostname()) {
+    return false;
+  }
+  return window.location.pathname === LEGACY_DOCS_PATH;
 }
 
 function getCurrentRouteKey(): string {
@@ -349,6 +450,16 @@ function App() {
       .querySelector<HTMLMetaElement>('meta[name="theme-color"]')
       ?.setAttribute("content", theme === "dark" ? "#0e0f0d" : "#f7f6f3");
   }, [theme]);
+
+  useEffect(() => {
+    if (shouldRedirectLegacyDocsRoute()) {
+      window.location.replace(getDocsHref());
+    }
+  }, []);
+
+  useEffect(() => {
+    document.title = page === "docs" ? "Documentation | Disburse" : "Disburse";
+  }, [page]);
 
   useEffect(() => {
     const interval = window.setInterval(() => setNow(new Date()), 1_000);
@@ -1052,13 +1163,21 @@ function App() {
   }
 
   function handleNavigate(event: MouseEvent<HTMLAnchorElement>, target: string) {
+    if (!getInternalTargetPath(target)) {
+      return;
+    }
     event.preventDefault();
     navigateTo(target);
   }
 
   function navigateTo(target: string) {
-    if (`${window.location.pathname}${window.location.search}${window.location.hash}` !== target) {
-      window.history.pushState(null, "", target);
+    const targetPath = getInternalTargetPath(target);
+    if (!targetPath) {
+      window.location.href = target;
+      return;
+    }
+    if (`${window.location.pathname}${window.location.search}${window.location.hash}` !== targetPath) {
+      window.history.pushState(null, "", targetPath);
     }
     setPage(getInitialPage());
     setRouteKey(getCurrentRouteKey());
@@ -1175,7 +1294,7 @@ function App() {
         />
       )}
 
-      {page !== "pay" && <FAQSection />}
+      {page !== "pay" && page !== "docs" && <FAQSection />}
       <SiteFooter onNavigate={handleNavigate} />
     </main>
   );
@@ -2061,33 +2180,37 @@ function TopNav({
   onNavigate: NavigateHandler;
   onToggleTheme: () => void;
 }) {
+  const paymentsHref = getAppHref("/payments");
+  const qrPaymentsHref = getAppHref("/qr-payments");
+  const docsHref = getDocsHref();
+
   return (
     <nav className="top-nav" aria-label="Primary">
-      <a className="brand" href="/payments" onClick={(event) => onNavigate(event, "/payments")} aria-label="Disburse payments">
+      <a className="brand" href={paymentsHref} onClick={(event) => onNavigate(event, paymentsHref)} aria-label="Disburse payments">
         <img src="/disburse-logo.png" alt="" aria-hidden="true" />
         <strong>Disburse</strong>
       </a>
       <div className="nav-links">
         <a
           className={page === "payments" ? "active" : ""}
-          href="/payments"
-          onClick={(event) => onNavigate(event, "/payments")}
+          href={paymentsHref}
+          onClick={(event) => onNavigate(event, paymentsHref)}
           aria-current={page === "payments" ? "page" : undefined}
         >
           Payments
         </a>
         <a
           className={page === "qr-payments" || page === "pay" ? "active" : ""}
-          href="/qr-payments"
-          onClick={(event) => onNavigate(event, "/qr-payments")}
+          href={qrPaymentsHref}
+          onClick={(event) => onNavigate(event, qrPaymentsHref)}
           aria-current={page === "qr-payments" || page === "pay" ? "page" : undefined}
         >
           QR Payments
         </a>
         <a
           className={page === "docs" ? "active" : ""}
-          href="/docs"
-          onClick={(event) => onNavigate(event, "/docs")}
+          href={docsHref}
+          onClick={(event) => onNavigate(event, docsHref)}
           aria-current={page === "docs" ? "page" : undefined}
         >
           Docs
@@ -2124,22 +2247,45 @@ function TopNav({
 function DocsPage() {
   return (
     <>
-      <section className="docs-hero" aria-label="Documentation">
-        <p className="eyebrow">Documentation</p>
-        <p>
-          Chain configuration, payment modes, QR payload structure, transaction execution, invoice generation, and
-          verification boundaries for the Arc Testnet payment console.
-        </p>
+      <section className="docs-hero" aria-labelledby="docs-heading">
+        <div className="docs-hero-copy">
+          <p className="eyebrow">Documentation</p>
+          <h1 id="docs-heading">Disburse project documentation</h1>
+          <p className="docs-lede">
+            A concise technical reference for the Arc Testnet payment console: what the product does, how requests move
+            from QR code to wallet transaction, and where the current release draws its boundaries.
+          </p>
+        </div>
+        <dl className="docs-summary" aria-label="Project summary">
+          {docsSummaryItems.map((item) => (
+            <div key={item.label}>
+              <dt>{item.label}</dt>
+              <dd>{item.value}</dd>
+            </div>
+          ))}
+        </dl>
       </section>
 
       <section className="docs-manual" aria-label="Documentation sections">
+        <aside className="docs-toc" aria-label="Documentation contents">
+          <strong>Contents</strong>
+          <nav>
+            {docsSections.map((section) => (
+              <a href={`#${slugify(section.title)}`} key={section.title}>
+                {section.title}
+              </a>
+            ))}
+          </nav>
+        </aside>
         <div className="docs-content">
           {docsSections.map((section, index) => (
             <article className="docs-section" id={slugify(section.title)} key={section.title}>
               <span>{String(index + 1).padStart(2, "0")}</span>
               <div>
                 <h2>{section.title}</h2>
-                <p>{section.body}</p>
+                {section.body.map((paragraph) => (
+                  <p key={paragraph}>{paragraph}</p>
+                ))}
                 {section.points && (
                   <ul>
                     {section.points.map((point) => (
@@ -2194,17 +2340,21 @@ function FAQSection() {
 }
 
 function SiteFooter({ onNavigate }: { onNavigate: NavigateHandler }) {
+  const paymentsHref = getAppHref("/payments");
+  const qrPaymentsHref = getAppHref("/qr-payments");
+  const docsHref = getDocsHref();
+
   return (
     <footer className="site-footer">
       <strong>Disburse</strong>
       <nav aria-label="Footer">
-        <a href="/payments" onClick={(event) => onNavigate(event, "/payments")}>
+        <a href={paymentsHref} onClick={(event) => onNavigate(event, paymentsHref)}>
           Payments
         </a>
-        <a href="/qr-payments" onClick={(event) => onNavigate(event, "/qr-payments")}>
+        <a href={qrPaymentsHref} onClick={(event) => onNavigate(event, qrPaymentsHref)}>
           QR Payments
         </a>
-        <a href="/docs" onClick={(event) => onNavigate(event, "/docs")}>
+        <a href={docsHref} onClick={(event) => onNavigate(event, docsHref)}>
           Docs
         </a>
         <a href={ARC_DOCS_URL} target="_blank" rel="noreferrer">
