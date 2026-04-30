@@ -60,11 +60,21 @@ import {
   loadReceipts,
   loadRequests,
   parseExportBundle,
+  RECEIPTS_KEY,
+  REQUESTS_KEY,
   saveReceipts,
   saveRequests,
   upsertReceipt,
   upsertRequest
 } from "./lib/storage";
+import {
+  confirmRemoteQrPayment,
+  createRemoteQrRequest,
+  fetchRemoteQrStatus,
+  recordRemoteQrSubmission
+} from "./lib/qrApi";
+import { applyQrRealtimeEvent, shouldHideQrForStatus, type QrRealtimeEvent, type QrStatusPayload } from "./lib/realtime";
+import { getSupabaseBrowserClient } from "./lib/supabaseClient";
 
 type DirectFormState = {
   recipient: string;
@@ -364,6 +374,85 @@ function App() {
   }, [receipts]);
 
   useEffect(() => {
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key === REQUESTS_KEY) {
+        setRequests(loadRequests());
+      }
+      if (event.key === RECEIPTS_KEY) {
+        setReceipts(loadReceipts());
+      }
+    };
+
+    window.addEventListener("storage", handleStorage);
+    return () => window.removeEventListener("storage", handleStorage);
+  }, []);
+
+  useEffect(() => {
+    if (page !== "qr-payments" || !selectedRequest) {
+      return;
+    }
+
+    let isActive = true;
+    fetchRemoteQrStatus(selectedRequest.id)
+      .then((payload) => {
+        if (isActive && payload) {
+          applyQrStatusPayload(payload, setRequests, setReceipts);
+        }
+      })
+      .catch((error) => {
+        if (isActive) {
+          setQrNotice({ tone: "error", text: errorToMessage(error) });
+        }
+      });
+
+    return () => {
+      isActive = false;
+    };
+  }, [page, selectedRequest?.id]);
+
+  useEffect(() => {
+    if (page !== "qr-payments" || !selectedRequest) {
+      return;
+    }
+
+    const supabase = getSupabaseBrowserClient();
+    if (!supabase) {
+      return;
+    }
+
+    const channel = supabase
+      .channel(`qr-request:${selectedRequest.id}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "INSERT",
+          schema: "public",
+          table: "payment_request_events",
+          filter: `request_id=eq.${selectedRequest.id}`
+        },
+        (payload) => {
+          const event = payload.new as QrRealtimeEvent;
+          setRequests((current) => {
+            const request = current.find((item) => item.id === event.request_id) ?? selectedRequest;
+            return upsertRequest(current, applyQrRealtimeEvent(request, event).request);
+          });
+          if (event.receipt) {
+            setReceipts((current) => upsertReceipt(current, event.receipt as Receipt));
+          }
+          setQrNotice({
+            tone: event.status === "paid" ? "success" : shouldHideQrForStatus(event.status) ? "error" : "info",
+            text: event.message
+          });
+        }
+      )
+      .subscribe();
+
+    return () => {
+      void supabase.removeChannel(channel);
+    };
+  }, [page, selectedRequest?.id]);
+
+  useEffect(() => {
     if (!selectedRequest) {
       setShareUrl("");
       return;
@@ -646,29 +735,15 @@ function App() {
     setQrNotice(undefined);
 
     try {
-      const recipient = validateRecipient(qrForm.recipient);
-      const token = qrForm.token;
-      const amount = formatTokenAmount(parseTokenAmount(qrForm.amount, token), token);
-      const createdAt = new Date().toISOString();
-      const blockNumber = await publicClient.getBlockNumber();
-      const requestBase: PaymentRequest = {
-        id: crypto.randomUUID(),
-        recipient,
-        token,
-        amount,
-        label: normalizeLabel(qrForm.label),
-        note: normalizeNote(qrForm.note),
-        invoiceDate: normalizeInvoiceDate(qrForm.invoiceDate),
-        expiresAt: createExpiry(createdAt),
-        createdAt,
-        startBlock: blockNumber.toString(),
-        status: "open"
-      };
-      const request: PaymentRequest = requestBase;
+      const remoteRequest = await createRemoteQrRequest(qrForm);
+      const request = remoteRequest ?? (await createLocalQrRequest(qrForm));
 
       setRequests((current) => upsertRequest(current, request));
       setSelectedId(request.id);
-      setQrNotice({ tone: "success", text: "QR payment request generated." });
+      setQrNotice({
+        tone: "success",
+        text: remoteRequest ? "QR payment request generated and synced." : "QR payment request generated."
+      });
       setQrForm((current) => ({
         ...emptyQrForm,
         recipient: current.recipient,
@@ -758,7 +833,15 @@ function App() {
       setPayLifecycle("submitted");
       setPayNotice({ tone: "info", text: "Transaction submitted. Verifying receipt." });
 
-      const requestWithHash = { ...requestWithAttempt, txHash: hash };
+      let requestWithHash: PaymentRequest = { ...requestWithAttempt, txHash: hash };
+      try {
+        const submission = await recordRemoteQrSubmission(request.id, hash, requestWithAttempt.submittedAt);
+        if (submission?.request) {
+          requestWithHash = submission.request;
+        }
+      } catch (error) {
+        setPayNotice({ tone: "info", text: `Transaction submitted. ${errorToMessage(error)}` });
+      }
       setRequests((current) => upsertRequest(current, requestWithHash));
 
       setPayLifecycle("confirming");
@@ -770,20 +853,40 @@ function App() {
         return;
       }
 
-      const result = await verifyPayment(requestWithHash);
-      if (result.status === "paid") {
-        const paidRequest: PaymentRequest = { ...requestWithHash, status: "paid" };
-        setRequests((current) => upsertRequest(current, paidRequest));
-        setReceipts((current) => upsertReceipt(current, result.receipt));
-        setPayLifecycle("verified");
+      const remoteConfirmation = await confirmRemoteQrPayment(request.id, hash).catch((error) => {
+        setPayNotice({ tone: "info", text: errorToMessage(error) });
+        return undefined;
+      });
+      if (remoteConfirmation) {
+        applyQrStatusPayload(remoteConfirmation, setRequests, setReceipts);
+        setPayLifecycle(remoteConfirmation.status === "paid" ? "verified" : "failed");
         setPayNotice({
-          tone: "success",
-          text: "Payment confirmed. Invoice is ready."
+          tone: remoteConfirmation.status === "paid" ? "success" : "error",
+          text: remoteConfirmation.message ?? (remoteConfirmation.status === "paid" ? "Payment confirmed." : "Payment failed.")
         });
       } else {
-        setRequests((current) => upsertRequest(current, { ...requestWithHash, status: result.status }));
-        setPayLifecycle("failed");
-        setPayNotice({ tone: result.status === "possible_match" ? "info" : "error", text: result.message });
+        const result = await verifyPayment(requestWithHash);
+        if (result.status === "paid") {
+          const paidRequest: PaymentRequest = { ...requestWithHash, status: "paid" };
+          setRequests((current) => upsertRequest(current, paidRequest));
+          setReceipts((current) => upsertReceipt(current, result.receipt));
+          setPayLifecycle("verified");
+          setPayNotice({
+            tone: "success",
+            text: "Payment confirmed. Invoice is ready."
+          });
+        } else {
+          const failedRequest: PaymentRequest = { ...requestWithHash, status: "failed" };
+          setRequests((current) => upsertRequest(current, failedRequest));
+          setPayLifecycle("failed");
+          setPayNotice({
+            tone: "error",
+            text:
+              result.status === "possible_match"
+                ? "A transfer reached the requester, but the amount does not match."
+                : result.message
+          });
+        }
       }
     } catch (error) {
       setPayLifecycle("failed");
@@ -803,20 +906,39 @@ function App() {
     setPayNotice({ tone: "info", text: "Scanning Arc Testnet logs." });
 
     try {
-      const result = await verifyPayment(request);
-      if (result.status === "paid") {
-        const paidRequest: PaymentRequest = { ...request, status: "paid", txHash: result.receipt.txHash };
-        setRequests((current) => upsertRequest(current, paidRequest));
-        setReceipts((current) => upsertReceipt(current, result.receipt));
-        setPayLifecycle("verified");
+      const remoteConfirmation = request.txHash
+        ? await confirmRemoteQrPayment(request.id, request.txHash).catch(() => undefined)
+        : undefined;
+      if (remoteConfirmation) {
+        applyQrStatusPayload(remoteConfirmation, setRequests, setReceipts);
+        setPayLifecycle(remoteConfirmation.status === "paid" ? "verified" : "failed");
         setPayNotice({
-          tone: "success",
-          text: result.message
+          tone: remoteConfirmation.status === "paid" ? "success" : "error",
+          text: remoteConfirmation.message ?? (remoteConfirmation.status === "paid" ? "Payment confirmed." : "Payment failed.")
         });
       } else {
-        setRequests((current) => upsertRequest(current, { ...request, status: result.status }));
-        setPayLifecycle(result.status === "possible_match" ? "submitted" : "failed");
-        setPayNotice({ tone: result.status === "possible_match" ? "info" : "error", text: result.message });
+        const result = await verifyPayment(request);
+        if (result.status === "paid") {
+          const paidRequest: PaymentRequest = { ...request, status: "paid", txHash: result.receipt.txHash };
+          setRequests((current) => upsertRequest(current, paidRequest));
+          setReceipts((current) => upsertReceipt(current, result.receipt));
+          setPayLifecycle("verified");
+          setPayNotice({
+            tone: "success",
+            text: result.message
+          });
+        } else {
+          const failedStatus = result.status === "possible_match" ? "failed" : result.status;
+          setRequests((current) => upsertRequest(current, { ...request, status: failedStatus }));
+          setPayLifecycle("failed");
+          setPayNotice({
+            tone: failedStatus === "failed" ? "error" : "info",
+            text:
+              result.status === "possible_match"
+                ? "A transfer reached the requester, but the amount does not match."
+                : result.message
+          });
+        }
       }
     } catch (error) {
       setPayLifecycle("failed");
@@ -1283,6 +1405,9 @@ function QrPaymentsPage({
   onExport: () => void;
   onImport: (file: File | undefined) => void;
 }) {
+  const displayRequest = selectedRequest ? refreshDerivedStatus(selectedRequest, now) : undefined;
+  const qrIsFinal = displayRequest ? shouldHideQrForStatus(displayRequest.status) : false;
+
   return (
     <>
       <RouteHero eyebrow="QR Payments" title="Create a fixed request for someone else to scan and pay." />
@@ -1372,34 +1497,42 @@ function QrPaymentsPage({
 
           <section className="desk-pane pay-pane" aria-labelledby="qr-output-heading">
             <PaneTitle id="qr-output-heading" label="QR output" />
-            {selectedRequest && shareUrl ? (
+            {displayRequest && shareUrl ? (
               <>
                 <PaymentPreview
-                  title={selectedRequest.label}
-                  note={selectedRequest.note ?? "No note"}
-                  amount={selectedRequest.amount}
-                  token={selectedRequest.token}
-                  recipient={selectedRequest.recipient}
-                  invoiceDate={selectedRequest.invoiceDate}
-                  status={refreshDerivedStatus(selectedRequest, now).status}
+                  title={displayRequest.label}
+                  note={displayRequest.note ?? "No note"}
+                  amount={displayRequest.amount}
+                  token={displayRequest.token}
+                  recipient={displayRequest.recipient}
+                  invoiceDate={displayRequest.invoiceDate}
+                  status={displayRequest.status}
                 />
 
-                <div className="qr-share">
-                  {qrDataUrl ? (
-                    <img src={qrDataUrl} alt="QR payment request code" />
-                  ) : (
-                    <div className="qr-placeholder">Generating QR</div>
-                  )}
-                  <div>
-                    <span>Pay URL</span>
-                    <code>{shareUrl}</code>
-                    <button className="secondary-button" type="button" onClick={() => onCopy(shareUrl)}>
-                      Copy link
-                    </button>
+                {qrIsFinal ? (
+                  <QrFinalState request={displayRequest} receipt={selectedReceipt} />
+                ) : (
+                  <div className={`qr-share ${displayRequest.txHash ? "submitted" : "watching"}`}>
+                    {qrDataUrl ? (
+                      <img src={qrDataUrl} alt="QR payment request code" />
+                    ) : (
+                      <div className="qr-placeholder">Generating QR</div>
+                    )}
+                    <div>
+                      <span>Pay URL</span>
+                      <code>{shareUrl}</code>
+                      <div className="qr-live-line" aria-live="polite">
+                        <span className="qr-live-dot" aria-hidden="true" />
+                        {displayRequest.txHash ? "Payment submitted" : "Watching for payment"}
+                      </div>
+                      <button className="secondary-button" type="button" onClick={() => onCopy(shareUrl)}>
+                        Copy link
+                      </button>
+                    </div>
                   </div>
-                </div>
+                )}
 
-                {selectedReceipt && (
+                {selectedReceipt && !qrIsFinal && (
                   <div className="receipt-line">
                     <div>
                       <span>Receipt</span>
@@ -1783,6 +1916,39 @@ function PaymentPreview({
           <Metric label="invoice date" value={formatInvoiceDate(invoiceDate)} />
         </div>
       )}
+    </div>
+  );
+}
+
+function QrFinalState({ request, receipt }: { request: PaymentRequest; receipt?: Receipt }) {
+  const copy =
+    request.status === "paid"
+      ? {
+          title: "Payment confirmed",
+          text: "The requester has the confirmation. This QR code is now closed."
+        }
+      : request.status === "failed"
+        ? {
+            title: "Payment failed",
+            text: "This QR code is no longer payable. Generate a fresh request before trying again."
+          }
+        : {
+            title: "QR expired",
+            text: "The payment window has closed. Generate a fresh QR code for this request."
+          };
+
+  return (
+    <div className={`qr-final-state ${request.status}`} aria-live="polite">
+      <span className="qr-final-mark" aria-hidden="true" />
+      <div>
+        <strong>{copy.title}</strong>
+        <p>{copy.text}</p>
+        {receipt && (
+          <a href={receipt.explorerUrl} target="_blank" rel="noreferrer">
+            Open receipt
+          </a>
+        )}
+      </div>
     </div>
   );
 }
@@ -2198,6 +2364,38 @@ function EmptyState({ title, text }: { title: string; text: string }) {
       <span>{text}</span>
     </div>
   );
+}
+
+type RequestStateWriter = (updater: (current: PaymentRequest[]) => PaymentRequest[]) => void;
+type ReceiptStateWriter = (updater: (current: Receipt[]) => Receipt[]) => void;
+
+function applyQrStatusPayload(payload: QrStatusPayload, setRequests: RequestStateWriter, setReceipts: ReceiptStateWriter) {
+  setRequests((current) => upsertRequest(current, payload.request));
+  if (payload.receipt) {
+    setReceipts((current) => upsertReceipt(current, payload.receipt as Receipt));
+  }
+}
+
+async function createLocalQrRequest(form: QrFormState): Promise<PaymentRequest> {
+  const recipient = validateRecipient(form.recipient);
+  const token = form.token;
+  const amount = formatTokenAmount(parseTokenAmount(form.amount, token), token);
+  const createdAt = new Date().toISOString();
+  const blockNumber = await publicClient.getBlockNumber();
+
+  return {
+    id: crypto.randomUUID(),
+    recipient,
+    token,
+    amount,
+    label: normalizeLabel(form.label),
+    note: normalizeNote(form.note),
+    invoiceDate: normalizeInvoiceDate(form.invoiceDate),
+    expiresAt: createExpiry(createdAt),
+    createdAt,
+    startBlock: blockNumber.toString(),
+    status: "open"
+  };
 }
 
 function buildTokenTransfer(form: DirectFormState): TokenTransfer {

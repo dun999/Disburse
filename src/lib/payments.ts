@@ -12,7 +12,7 @@ import { ARC_EXPLORER_URL, TOKENS, erc20Abi } from "./arc";
 
 export type PaymentToken = keyof typeof TOKENS;
 
-export type PaymentStatus = "open" | "paid" | "possible_match" | "expired";
+export type PaymentStatus = "open" | "paid" | "possible_match" | "expired" | "failed";
 
 export type PaymentRequest = {
   id: string;
@@ -191,14 +191,14 @@ export function hasPreExpirySubmission(request: PaymentRequest): boolean {
 }
 
 export function isPaymentPayable(request: PaymentRequest, now = new Date()): boolean {
-  if (request.status === "paid") {
+  if (request.status === "paid" || request.status === "failed") {
     return false;
   }
   return !isPaymentExpired(request, now) || hasPreExpirySubmission(request);
 }
 
 export function refreshDerivedStatus(request: PaymentRequest, now = new Date()): PaymentRequest {
-  if (request.status === "paid") {
+  if (request.status === "paid" || request.status === "failed") {
     return request;
   }
   return {

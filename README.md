@@ -13,6 +13,7 @@ It supports two current flows:
 - Vite
 - React 19
 - TypeScript
+- Supabase Realtime for cross-device QR payment status updates
 - viem for wallet/RPC/contract calls
 - qrcode for QR image generation
 - pdf-lib for local invoice PDFs
@@ -29,6 +30,18 @@ npm run build
 ```
 
 The dev server runs with `vite --host 0.0.0.0`. Vercel-style single page app routing is handled by `vercel.json`, which rewrites all paths to `index.html`.
+
+For Supabase-backed QR realtime and API routes, run the app through Vercel locally or deploy it to Vercel so `/api/*` functions are available. Plain Vite dev still supports the previous local-only QR fallback.
+
+Required realtime environment variables:
+
+```bash
+VITE_SUPABASE_URL=
+VITE_SUPABASE_ANON_KEY=
+SUPABASE_SERVICE_ROLE_KEY=
+```
+
+Apply `supabase/migrations/202604300001_qr_realtime.sql` to create the payment request, receipt, and realtime event tables before enabling the production realtime flow.
 
 ## Routes
 
@@ -91,6 +104,8 @@ QR requests default to a 15 minute validity window. A payment attempt that start
 
 The scanned payer page locks the request details. The payer can connect a wallet, estimate, send, verify, and download the invoice after payment.
 
+When Supabase is configured, QR requests are also written through Vercel API functions. The payer reports submitted transaction hashes to `/api/qr-submissions`; after confirmation, `/api/qr-confirmations` verifies Arc Testnet logs and writes a realtime event. Requester screens subscribe to `payment_request_events`, so paid, failed, and expired states close the QR and replace it with a final status panel.
+
 ## Local Data
 
 QR requests and receipts are stored in browser localStorage:
@@ -116,7 +131,8 @@ If a request has a known transaction hash, Disburse reads that transaction recei
 Status rules:
 
 - `paid`: exact transfer to the request recipient for the requested token amount.
-- `possible_match`: transfer to the recipient exists, but the amount differs.
+- `failed`: submitted transaction reverted, did not pay the request, or paid the recipient with the wrong amount.
+- `possible_match`: local log scan found a transfer to the recipient with a different amount before a submitted transaction was known.
 - `open`: no matching transfer was found.
 - `expired`: request is past its expiry and no pre-expiry payment attempt was submitted.
 

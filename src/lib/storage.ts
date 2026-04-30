@@ -12,8 +12,8 @@ import {
   validateRecipient
 } from "./payments";
 
-const REQUESTS_KEY = "disburse.requests";
-const RECEIPTS_KEY = "disburse.receipts";
+export const REQUESTS_KEY = "disburse.requests";
+export const RECEIPTS_KEY = "disburse.receipts";
 const LEGACY_REQUESTS_KEY = "arc-pay-desk.requests";
 const LEGACY_RECEIPTS_KEY = "arc-pay-desk.receipts";
 
@@ -166,7 +166,7 @@ function normalizeImportedReceipt(value: unknown): Receipt | undefined {
 }
 
 function readPaymentStatus(value: unknown): PaymentStatus {
-  return value === "paid" || value === "possible_match" || value === "expired" ? value : "open";
+  return value === "paid" || value === "possible_match" || value === "expired" || value === "failed" ? value : "open";
 }
 
 function readHash(value: unknown): `0x${string}` | undefined {
