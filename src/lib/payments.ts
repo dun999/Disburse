@@ -6,7 +6,7 @@ import {
   parseUnits,
   type Address,
   type Hash,
-  type Log
+  type Hex
 } from "viem";
 import { ARC_EXPLORER_URL, TOKENS, erc20Abi } from "./arc.js";
 
@@ -53,6 +53,13 @@ export type DecodedTransfer = {
   from: Address;
   to: Address;
   value: bigint;
+};
+
+export type TransferLog = {
+  transactionHash?: Hash | null;
+  blockNumber: bigint | null;
+  data: Hex;
+  topics: [] | [Hex, ...Hex[]];
 };
 
 const MAX_LABEL_LENGTH = 80;
@@ -337,7 +344,7 @@ export function transferMatchesRequest(request: PaymentRequest, transfer: Decode
   );
 }
 
-export function decodeTransferLog(log: Log): DecodedTransfer | undefined {
+export function decodeTransferLog(log: TransferLog): DecodedTransfer | undefined {
   if (!log.transactionHash || log.blockNumber === null) {
     return undefined;
   }
@@ -345,6 +352,7 @@ export function decodeTransferLog(log: Log): DecodedTransfer | undefined {
   try {
     const decoded = decodeEventLog({
       abi: erc20Abi,
+      eventName: "Transfer",
       data: log.data,
       topics: log.topics
     });

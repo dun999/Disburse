@@ -18,7 +18,8 @@ import {
   type DecodedTransfer,
   type PaymentRequest,
   type PaymentToken,
-  type Receipt
+  type Receipt,
+  type TransferLog
 } from "../src/lib/payments.js";
 import {
   paymentRequestToRow,
@@ -205,7 +206,7 @@ export function resolveSubmittedReceiptConfirmation(
 
   const transfers = receipt.logs
     .filter((log) => log.address.toLowerCase() === TOKENS[request.token].address.toLowerCase())
-    .map((log) => decodeTransferLog(log as Log))
+    .map((log) => decodeTransferLog(log as unknown as TransferLog))
     .filter((transfer): transfer is DecodedTransfer => Boolean(transfer));
 
   const exact = transfers.find((transfer) => transferMatchesRequest(request, transfer));
