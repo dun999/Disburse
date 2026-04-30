@@ -1,5 +1,5 @@
 import { type FormEvent, type MouseEvent, type ReactNode, type RefObject, useEffect, useMemo, useRef, useState } from "react";
-import { formatUnits, parseUnits, type Hash } from "viem";
+import { formatUnits, type Hash } from "viem";
 import {
   ARC_CHAIN_ID,
   ARC_DOCS_URL,
@@ -16,8 +16,10 @@ import {
   checkArcRpc,
   connectWallet,
   estimatePayment,
+  getSpendabilityCheck,
   getInjectedProvider,
   getWalletChainId,
+  hasInsufficientNativeSpendBalance,
   readBalances,
   submitPayment,
   submitTokenTransfer,
@@ -25,6 +27,7 @@ import {
   verifyPayment,
   waitForTransactionConfirmation,
   type Balances,
+  type SpendableTransfer,
   type TokenTransfer,
   type TransferEstimate
 } from "./lib/onchain";
@@ -83,6 +86,7 @@ type Notice = {
 type RpcHealth = Awaited<ReturnType<typeof checkArcRpc>>;
 type Theme = "light" | "dark";
 type Page = "payments" | "qr-payments" | "pay" | "docs";
+type PayLifecycle = "idle" | "preparing" | "awaiting_wallet" | "submitted" | "confirming" | "verified" | "failed";
 type NavigateHandler = (event: MouseEvent<HTMLAnchorElement>, target: string) => void;
 type DocsSection = {
   title: string;
@@ -190,7 +194,7 @@ const docsSections: DocsSection[] = [
       "Connect: eth_requestAccounts.",
       "Network: wallet_switchEthereumChain, with wallet_addEthereumChain fallback for Arc Testnet.",
       "Transfer: eth_sendTransaction with ERC-20 transfer(recipient, parsedAmount) calldata on the selected USDC or EURC contract.",
-      "Gas: native Arc Testnet gas is represented as USDC with 18 decimals."
+      "Gas: estimates are used for display and balance checks; the wallet finalizes transaction gas at signing."
     ]
   },
   {
@@ -283,6 +287,7 @@ function App() {
   const [isSendingDirect, setIsSendingDirect] = useState(false);
   const [isEstimatingPay, setIsEstimatingPay] = useState(false);
   const [isPayingQr, setIsPayingQr] = useState(false);
+  const [payLifecycle, setPayLifecycle] = useState<PayLifecycle>("idle");
   const [isVerifying, setIsVerifying] = useState(false);
   const [isGeneratingInvoice, setIsGeneratingInvoice] = useState(false);
 
@@ -313,8 +318,8 @@ function App() {
   const payIsPayable = payRequest ? isPaymentPayable(payRequest, now) : false;
   const directInsufficientToken = useInsufficientToken(directBalances, directForm);
   const payInsufficientToken = useInsufficientToken(payBalances, payRequest);
-  const directMissingGas = hasInsufficientGas(directBalances, directEstimate);
-  const payMissingGas = hasInsufficientGas(payBalances, payEstimate);
+  const directMissingGas = hasInsufficientGas(directBalances, directForm, directEstimate);
+  const payMissingGas = hasInsufficientGas(payBalances, payRequest, payEstimate);
   const rpcIsStale = Boolean(rpcHealth && Date.now() - new Date(rpcHealth.checkedAt).getTime() > 18_000);
   const rpcStatusLabel = !rpcHealth
     ? "checking"
@@ -412,6 +417,7 @@ function App() {
       setPayRequestId(undefined);
       setPayBalances(undefined);
       setPayEstimate(undefined);
+      setPayLifecycle("idle");
       setPayNotice({ tone: "error", text: "Payment QR link is missing request data." });
       return;
     }
@@ -424,11 +430,13 @@ function App() {
       setPayRequestId(decoded.id);
       setPayBalances(undefined);
       setPayEstimate(undefined);
+      setPayLifecycle("idle");
       setPayNotice({ tone: "info", text: "QR payment request loaded." });
     } catch (error) {
       setPayRequestId(undefined);
       setPayBalances(undefined);
       setPayEstimate(undefined);
+      setPayLifecycle("idle");
       setPayNotice({ tone: "error", text: errorToMessage(error) });
     }
   }, [page, routeKey]);
@@ -612,10 +620,10 @@ function App() {
         transferEstimate = await estimatePayment(account, transfer);
         setDirectEstimate(transferEstimate);
       }
-      ensureGasBalance(balances, transferEstimate);
+      ensureGasBalance(balances, transfer, transferEstimate);
 
       setDirectNotice({ tone: "info", text: "Open your wallet and approve the transfer." });
-      const hash = await submitTokenTransfer(provider, account, transfer, transferEstimate);
+      const hash = await submitTokenTransfer(provider, account, transfer);
       setDirectHash(hash);
       setDirectNotice({ tone: "info", text: "Transaction submitted. Waiting for confirmation." });
 
@@ -723,6 +731,7 @@ function App() {
     }
 
     setIsPayingQr(true);
+    setPayLifecycle("preparing");
     setPayNotice({ tone: "info", text: "Preparing QR payment." });
 
     try {
@@ -736,23 +745,27 @@ function App() {
         transferEstimate = await estimatePayment(account, request);
         setPayEstimate(transferEstimate);
       }
-      ensureGasBalance(balances, transferEstimate);
+      ensureGasBalance(balances, request, transferEstimate);
 
       const requestWithAttempt: PaymentRequest = {
         ...request,
         submittedAt: attemptStartedAt.toISOString()
       };
+      setPayLifecycle("awaiting_wallet");
       setPayNotice({ tone: "info", text: "Open your wallet and approve the payment." });
 
-      const hash = await submitPayment(provider, account, requestWithAttempt, transferEstimate);
+      const hash = await submitPayment(provider, account, requestWithAttempt);
+      setPayLifecycle("submitted");
       setPayNotice({ tone: "info", text: "Transaction submitted. Verifying receipt." });
 
       const requestWithHash = { ...requestWithAttempt, txHash: hash };
       setRequests((current) => upsertRequest(current, requestWithHash));
 
+      setPayLifecycle("confirming");
       try {
         await waitForTransactionConfirmation(hash);
       } catch (error) {
+        setPayLifecycle("submitted");
         setPayNotice({ tone: "info", text: errorToMessage(error) });
         return;
       }
@@ -762,15 +775,18 @@ function App() {
         const paidRequest: PaymentRequest = { ...requestWithHash, status: "paid" };
         setRequests((current) => upsertRequest(current, paidRequest));
         setReceipts((current) => upsertReceipt(current, result.receipt));
+        setPayLifecycle("verified");
         setPayNotice({
           tone: "success",
           text: "Payment confirmed. Invoice is ready."
         });
       } else {
         setRequests((current) => upsertRequest(current, { ...requestWithHash, status: result.status }));
+        setPayLifecycle("failed");
         setPayNotice({ tone: result.status === "possible_match" ? "info" : "error", text: result.message });
       }
     } catch (error) {
+      setPayLifecycle("failed");
       setPayNotice({ tone: "error", text: errorToMessage(error) });
     } finally {
       setIsPayingQr(false);
@@ -783,6 +799,7 @@ function App() {
     }
 
     setIsVerifying(true);
+    setPayLifecycle(request.txHash ? "confirming" : "preparing");
     setPayNotice({ tone: "info", text: "Scanning Arc Testnet logs." });
 
     try {
@@ -791,15 +808,18 @@ function App() {
         const paidRequest: PaymentRequest = { ...request, status: "paid", txHash: result.receipt.txHash };
         setRequests((current) => upsertRequest(current, paidRequest));
         setReceipts((current) => upsertReceipt(current, result.receipt));
+        setPayLifecycle("verified");
         setPayNotice({
           tone: "success",
           text: result.message
         });
       } else {
         setRequests((current) => upsertRequest(current, { ...request, status: result.status }));
+        setPayLifecycle(result.status === "possible_match" ? "submitted" : "failed");
         setPayNotice({ tone: result.status === "possible_match" ? "info" : "error", text: result.message });
       }
     } catch (error) {
+      setPayLifecycle("failed");
       setPayNotice({ tone: "error", text: errorToMessage(error) });
     } finally {
       setIsVerifying(false);
@@ -857,6 +877,7 @@ function App() {
   function handleSelectRequest(request: PaymentRequest) {
     setSelectedId(request.id);
     setPayEstimate(undefined);
+    setPayLifecycle("idle");
     setPayNotice(undefined);
   }
 
@@ -1019,6 +1040,7 @@ function App() {
           isConnecting={isConnecting}
           isEstimating={isEstimatingPay}
           isPaying={isPayingQr}
+          lifecycle={payLifecycle}
           isVerifying={isVerifying}
           isGeneratingInvoice={isGeneratingInvoice}
           onConnect={handleConnectWallet}
@@ -1485,6 +1507,7 @@ function PayRequestPage({
   isConnecting,
   isEstimating,
   isPaying,
+  lifecycle,
   isVerifying,
   isGeneratingInvoice,
   onConnect,
@@ -1513,6 +1536,7 @@ function PayRequestPage({
   isConnecting: boolean;
   isEstimating: boolean;
   isPaying: boolean;
+  lifecycle: PayLifecycle;
   isVerifying: boolean;
   isGeneratingInvoice: boolean;
   onConnect: () => void;
@@ -1524,6 +1548,8 @@ function PayRequestPage({
   onCopy: (value: string) => void;
 }) {
   const hasSubmittedTransaction = Boolean(request?.txHash && request.status !== "paid");
+  const submittedTxHash = request?.txHash;
+  const payButtonLabel = getPayButtonLabel(isPaying, lifecycle);
 
   return (
     <>
@@ -1602,6 +1628,12 @@ function PayRequestPage({
                 />
               )}
 
+              {lifecycle !== "idle" && (
+                <div className="estimate-line">
+                  <Metric label="payer stage" value={formatPayLifecycle(lifecycle)} />
+                </div>
+              )}
+
               <div className="action-row">
                 <button
                   className="secondary-button"
@@ -1626,7 +1658,7 @@ function PayRequestPage({
                     request.status === "paid"
                   }
                 >
-                  {isPaying ? "Paying..." : "Pay request"}
+                  {payButtonLabel}
                 </button>
                 <button className="secondary-button" type="button" onClick={onVerify} disabled={isVerifying}>
                   {isVerifying ? "Verifying..." : "Verify"}
@@ -1635,6 +1667,23 @@ function PayRequestPage({
 
               {estimate && <EstimateGrid estimate={estimate} />}
               {notice && <NoticeBar notice={notice} />}
+
+              {submittedTxHash && !receipt && (
+                <div className="receipt-line">
+                  <div>
+                    <span>Submitted transaction</span>
+                    <strong>{shortAddress(submittedTxHash, 10, 8)}</strong>
+                  </div>
+                  <div className="receipt-actions">
+                    <button className="text-button" type="button" onClick={() => onCopy(toExplorerTxUrl(submittedTxHash))}>
+                      Copy tx
+                    </button>
+                    <a href={toExplorerTxUrl(submittedTxHash)} target="_blank" rel="noreferrer">
+                      Open tx
+                    </a>
+                  </div>
+                </div>
+              )}
 
               {receipt && (
                 <div className="receipt-line">
@@ -2080,7 +2129,9 @@ function RecoveryPanel({
 }) {
   const extraToken = insufficientToken && token !== "USDC" ? ` and ${token}` : "";
   const message = missingGas
-    ? `Fund Arc Testnet USDC for gas${extraToken}.`
+    ? token === "USDC"
+      ? "Fund enough Arc Testnet USDC for amount plus gas."
+      : `Fund Arc Testnet USDC for gas${extraToken}.`
     : `Fund more ${token} on Arc Testnet.`;
 
   return (
@@ -2103,6 +2154,33 @@ function RecoveryPanel({
 
 function StatusBadge({ status }: { status: PaymentStatus }) {
   return <span className={`status-badge ${status}`}>{status.replace("_", " ")}</span>;
+}
+
+function formatPayLifecycle(lifecycle: PayLifecycle): string {
+  return lifecycle.replace("_", " ");
+}
+
+function getPayButtonLabel(isPaying: boolean, lifecycle: PayLifecycle): string {
+  if (!isPaying) {
+    return "Pay request";
+  }
+
+  switch (lifecycle) {
+    case "preparing":
+      return "Preparing...";
+    case "awaiting_wallet":
+      return "Approve in wallet";
+    case "submitted":
+    case "confirming":
+      return "Confirming...";
+    case "verified":
+      return "Verified";
+    case "failed":
+      return "Retry payment";
+    case "idle":
+    default:
+      return "Pay request";
+  }
 }
 
 function NoticeBar({ notice, compact = false }: { notice: Notice; compact?: boolean }) {
@@ -2142,26 +2220,22 @@ function ensureTokenBalance(balances: Balances, transfer: TokenTransfer) {
   }
 }
 
-function ensureGasBalance(balances: Balances, estimate: TransferEstimate) {
-  if (hasInsufficientGas(balances, estimate)) {
+function ensureGasBalance(balances: Balances, transfer: SpendableTransfer, estimate: TransferEstimate) {
+  const spendability = getSpendabilityCheck(balances, transfer, estimate);
+  if (!spendability.hasEnoughNative) {
+    if (transfer.token === "USDC") {
+      throw new Error("Insufficient Arc Testnet USDC for payment amount plus gas.");
+    }
     throw new Error("Insufficient Arc Testnet USDC for gas.");
   }
 }
 
-function hasInsufficientGas(balances: Balances | undefined, estimate?: TransferEstimate): boolean {
-  if (!balances) {
-    return false;
-  }
-
-  try {
-    const available = parseUnits(balances.nativeGas, 18);
-    if (available <= 0n) {
-      return true;
-    }
-    return estimate ? available < estimate.gas * estimate.gasPrice : false;
-  } catch {
-    return false;
-  }
+function hasInsufficientGas(
+  balances: Balances | undefined,
+  transfer: SpendableTransfer | undefined,
+  estimate?: TransferEstimate
+): boolean {
+  return hasInsufficientNativeSpendBalance(balances, transfer, estimate);
 }
 
 function useInsufficientToken(balances: Balances | undefined, transfer: TokenTransfer | DirectFormState | undefined): boolean {

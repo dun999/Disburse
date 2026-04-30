@@ -4,7 +4,7 @@ import {
   formatUnits,
   getAddress,
   http,
-  numberToHex,
+  parseUnits,
   type Address,
   type EIP1193Provider,
   type Hash
@@ -56,6 +56,18 @@ export type TokenTransfer = {
   amount: string;
 };
 
+export type SpendableTransfer = Pick<TokenTransfer, "token" | "amount">;
+
+export type SpendabilityCheck = {
+  availableNative: bigint;
+  requiredNative: bigint;
+  gasFee: bigint;
+  availableToken: bigint;
+  requiredToken: bigint;
+  hasEnoughNative: boolean;
+  hasEnoughToken: boolean;
+};
+
 export type RpcEndpointStatus = {
   id: ArcRpcEndpoint["id"];
   label: string;
@@ -100,12 +112,12 @@ export type WalletTransferTransaction = {
   to: Address;
   data: `0x${string}`;
   value: "0x0";
-  gas?: `0x${string}`;
-  gasPrice?: `0x${string}`;
 };
 
 export const WALLET_APPROVAL_TIMEOUT_MS = 5 * 60_000;
 export const RECEIPT_WAIT_TIMEOUT_MS = 120_000;
+export const ARC_NATIVE_USDC_DECIMALS = 18;
+export const USDC_NATIVE_UNIT_SCALE = 10n ** BigInt(ARC_NATIVE_USDC_DECIMALS - TOKENS.USDC.decimals);
 
 export function getInjectedProvider(): EthereumProvider | undefined {
   if (typeof window === "undefined") {
@@ -201,10 +213,9 @@ export async function estimatePayment(account: Address, transfer: TokenTransfer)
 export async function sendTokenTransfer(
   provider: EthereumProvider,
   account: Address,
-  transferRequest: TokenTransfer,
-  estimate?: TransferEstimate
+  transferRequest: TokenTransfer
 ): Promise<Hash> {
-  const hash = await submitTokenTransfer(provider, account, transferRequest, estimate);
+  const hash = await submitTokenTransfer(provider, account, transferRequest);
   await waitForTransactionConfirmation(hash);
 
   return hash;
@@ -213,34 +224,30 @@ export async function sendTokenTransfer(
 export async function submitTokenTransfer(
   provider: EthereumProvider,
   account: Address,
-  transferRequest: TokenTransfer,
-  estimate?: TransferEstimate
+  transferRequest: TokenTransfer
 ): Promise<Hash> {
-  return requestWalletTransaction(provider, buildErc20TransferTransaction(account, transferRequest, estimate));
+  return requestWalletTransaction(provider, buildErc20TransferTransaction(account, transferRequest));
 }
 
 export async function sendPayment(
   provider: EthereumProvider,
   account: Address,
-  request: PaymentRequest,
-  estimate?: TransferEstimate
+  request: PaymentRequest
 ): Promise<Hash> {
-  return sendTokenTransfer(provider, account, request, estimate);
+  return sendTokenTransfer(provider, account, request);
 }
 
 export async function submitPayment(
   provider: EthereumProvider,
   account: Address,
-  request: PaymentRequest,
-  estimate?: TransferEstimate
+  request: PaymentRequest
 ): Promise<Hash> {
-  return submitTokenTransfer(provider, account, request, estimate);
+  return submitTokenTransfer(provider, account, request);
 }
 
 export function buildErc20TransferTransaction(
   account: Address,
-  transferRequest: TokenTransfer,
-  estimate?: TransferEstimate
+  transferRequest: TokenTransfer
 ): WalletTransferTransaction {
   const amount = parseTokenAmount(transferRequest.amount, transferRequest.token);
   return {
@@ -251,14 +258,51 @@ export function buildErc20TransferTransaction(
       functionName: "transfer",
       args: [transferRequest.recipient, amount]
     }),
-    value: "0x0",
-    ...(estimate
-      ? {
-          gas: numberToHex(estimate.gas),
-          gasPrice: numberToHex(estimate.gasPrice)
-        }
-      : {})
+    value: "0x0"
   };
+}
+
+export function getSpendabilityCheck(
+  balances: Balances,
+  transfer: SpendableTransfer,
+  estimate?: TransferEstimate
+): SpendabilityCheck {
+  const availableNative = parseUnits(balances.nativeGas, ARC_NATIVE_USDC_DECIMALS);
+  const gasFee = estimate ? estimate.gas * estimate.gasPrice : 0n;
+  const nativeAmount = transfer.token === "USDC" ? usdcTokenAmountToNativeUnits(transfer.amount) : 0n;
+  const requiredNative = nativeAmount + gasFee;
+  const availableToken = parseTokenAmount(balances.tokenBalance, transfer.token);
+  const requiredToken = parseTokenAmount(transfer.amount, transfer.token);
+
+  return {
+    availableNative,
+    requiredNative,
+    gasFee,
+    availableToken,
+    requiredToken,
+    hasEnoughNative: availableNative > 0n && availableNative >= requiredNative,
+    hasEnoughToken: availableToken >= requiredToken
+  };
+}
+
+export function hasInsufficientNativeSpendBalance(
+  balances: Balances | undefined,
+  transfer: SpendableTransfer | undefined,
+  estimate?: TransferEstimate
+): boolean {
+  if (!balances || !transfer?.amount || !transfer.token) {
+    return false;
+  }
+
+  try {
+    return !getSpendabilityCheck(balances, transfer, estimate).hasEnoughNative;
+  } catch {
+    return false;
+  }
+}
+
+function usdcTokenAmountToNativeUnits(amount: string): bigint {
+  return parseTokenAmount(amount, "USDC") * USDC_NATIVE_UNIT_SCALE;
 }
 
 async function requestWalletTransaction(
