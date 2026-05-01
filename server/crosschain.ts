@@ -17,6 +17,7 @@ import {
   ARC_DESTINATION_CHAIN_ID,
   BASE_SEPOLIA_CHAIN_ID,
   CROSSCHAIN_CHAINS,
+  MEGAETH_TESTNET_CHAIN_ID,
   getCrossChainExplorerTxUrl,
   getAllowedSourceChainIds,
   isRemotePaymentSourceChainId,
@@ -70,6 +71,18 @@ type DestinationRouteConfig = BaseServerRouteConfig<typeof ARC_DESTINATION_CHAIN
 };
 
 type ServerRouteConfig = SourceRouteConfig | DestinationRouteConfig;
+
+const DEPLOYED_ARC_SETTLEMENT = "0x8c535227ed2b2963a3c1176510bc59e7a7fef07d" as Address;
+const DEPLOYED_BASE_SEPOLIA_USDC = "0x036CbD53842c5426634e7929541eC2318f3dCF7e" as Address;
+const DEPLOYED_MEGAETH_USDC = "0xd4db9b3dc633f7b1403f4ba2281aa1aca43296d8" as Address;
+const DEPLOYED_SOURCE_CONTRACTS = {
+  [BASE_SEPOLIA_CHAIN_ID]: DEPLOYED_ARC_SETTLEMENT,
+  [MEGAETH_TESTNET_CHAIN_ID]: DEPLOYED_ARC_SETTLEMENT
+} as const satisfies Record<RemotePaymentSourceChainId, Address>;
+const DEPLOYED_SOURCE_TOKENS = {
+  [BASE_SEPOLIA_CHAIN_ID]: DEPLOYED_BASE_SEPOLIA_USDC,
+  [MEGAETH_TESTNET_CHAIN_ID]: DEPLOYED_MEGAETH_USDC
+} as const satisfies Record<RemotePaymentSourceChainId, Address>;
 
 type SourceReceiptLog = {
   address: Address;
@@ -394,12 +407,19 @@ function readServerRouteConfig(
   const tokenAddress =
     readAddress(`${prefix}_USDC_ADDRESS`) ??
     readAddress(`VITE_${prefix}_USDC_ADDRESS`) ??
+    readDeployedTokenAddress(chainId) ??
     (chainId === ARC_DESTINATION_CHAIN_ID ? TOKENS.USDC.address : undefined);
   const sourceContract =
-    use === "source" ? readAddress(`${prefix}_QR_PAYMENT_SOURCE`) ?? readAddress(`VITE_${prefix}_QR_PAYMENT_SOURCE`) : undefined;
+    use === "source"
+      ? readAddress(`${prefix}_QR_PAYMENT_SOURCE`) ??
+        readAddress(`VITE_${prefix}_QR_PAYMENT_SOURCE`) ??
+        readDeployedSourceContract(chainId)
+      : undefined;
   const settlementContract =
     use === "destination"
-      ? readAddress(`${prefix}_QR_PAYMENT_SETTLEMENT`) ?? readAddress(`VITE_${prefix}_QR_PAYMENT_SETTLEMENT`)
+      ? readAddress(`${prefix}_QR_PAYMENT_SETTLEMENT`) ??
+        readAddress(`VITE_${prefix}_QR_PAYMENT_SETTLEMENT`) ??
+        DEPLOYED_ARC_SETTLEMENT
       : undefined;
   const rpcUrl = process.env[`${prefix}_RPC_URL`]?.trim() || CROSSCHAIN_CHAINS[chainId].rpcUrl;
   const relayerPrivateKey = readPrivateKey(`${prefix}_RELAYER_PRIVATE_KEY`);
@@ -447,6 +467,14 @@ function readServerRouteConfig(
     tokenAddress,
     relayerPrivateKey
   };
+}
+
+function readDeployedSourceContract(chainId: RemotePaymentSourceChainId | typeof ARC_DESTINATION_CHAIN_ID): Address | undefined {
+  return isRemotePaymentSourceChainId(chainId) ? DEPLOYED_SOURCE_CONTRACTS[chainId] : undefined;
+}
+
+function readDeployedTokenAddress(chainId: RemotePaymentSourceChainId | typeof ARC_DESTINATION_CHAIN_ID): Address | undefined {
+  return isRemotePaymentSourceChainId(chainId) ? DEPLOYED_SOURCE_TOKENS[chainId] : undefined;
 }
 
 function readAddress(key: string): Address | undefined {

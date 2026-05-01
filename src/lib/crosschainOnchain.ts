@@ -25,6 +25,7 @@ import { createExpiry, parseTokenAmount, type PaymentRequest } from "./payments"
 
 const WALLET_APPROVAL_TIMEOUT_MS = 5 * 60_000;
 const RECEIPT_WAIT_TIMEOUT_MS = 120_000;
+const SOURCE_PAYMENT_GAS_FALLBACK = 150_000n;
 
 export async function switchToCrossChain(provider: EthereumProvider, chainId: PaymentSourceChainId): Promise<void> {
   const config = getCrossChain(chainId);
@@ -110,13 +111,17 @@ export async function estimateCrossChainPayment(
         args: [route.sourceContract, amount]
       })
     : 0n;
-  const paymentGas = await client.estimateContractGas({
-    account,
-    address: route.sourceContract,
-    abi: qrPaymentSourceAbi,
-    functionName: "pay",
-    args: buildCrossChainPayArgs(request, sourceChainId, route.tokenAddress)
-  });
+  const paymentGas = await estimateSourcePaymentGas(
+    () =>
+      client.estimateContractGas({
+        account,
+        address: route.sourceContract,
+        abi: qrPaymentSourceAbi,
+        functionName: "pay",
+        args: buildCrossChainPayArgs(request, sourceChainId, route.tokenAddress)
+      }),
+    needsApproval
+  );
   const totalGas = approvalGas + paymentGas;
 
   return {
@@ -163,6 +168,17 @@ export async function submitCrossChainPayment(
       value: "0x0"
     });
     await waitForCrossChainReceipt(sourceChainId, approveHash);
+    const confirmedAllowance = await client.readContract({
+      address: route.tokenAddress,
+      abi: crossChainErc20Abi,
+      functionName: "allowance",
+      args: [account, route.sourceContract]
+    });
+    if (confirmedAllowance < amount) {
+      throw new Error(
+        `USDC approval confirmed, but ${getCrossChain(sourceChainId).label} still reports insufficient allowance for the QR payment contract. Approve spender ${route.sourceContract}, then try again.`
+      );
+    }
   }
 
   return requestWalletTransaction(provider, {
@@ -232,6 +248,18 @@ async function readPendingNonceOnChain(account: Address, sourceChainId: RemotePa
   });
 }
 
+async function estimateSourcePaymentGas(estimate: () => Promise<bigint>, needsApproval: boolean): Promise<bigint> {
+  try {
+    return await estimate();
+  } catch (error) {
+    if (!needsApproval || !isAllowanceRevert(error)) {
+      throw error;
+    }
+
+    return SOURCE_PAYMENT_GAS_FALLBACK;
+  }
+}
+
 async function requestWalletTransaction(
   provider: EthereumProvider,
   transaction: {
@@ -263,6 +291,40 @@ function readProviderErrorCode(error: unknown): number | undefined {
     return Number((error as { code?: unknown }).code);
   }
   return undefined;
+}
+
+function isAllowanceRevert(error: unknown): boolean {
+  return readErrorText(error).some((message) => /allowance|transfer amount exceeds allowance/i.test(message));
+}
+
+function readErrorText(error: unknown, seen = new Set<unknown>()): string[] {
+  if (typeof error === "string") {
+    return [error];
+  }
+  if (typeof error !== "object" || error === null) {
+    return [];
+  }
+  if (seen.has(error)) {
+    return [];
+  }
+  seen.add(error);
+
+  const source = error as {
+    message?: unknown;
+    shortMessage?: unknown;
+    details?: unknown;
+    metaMessages?: unknown;
+    cause?: unknown;
+  };
+  const messages = [source.message, source.shortMessage, source.details].filter(
+    (value): value is string => typeof value === "string"
+  );
+
+  if (Array.isArray(source.metaMessages)) {
+    messages.push(...source.metaMessages.filter((value): value is string => typeof value === "string"));
+  }
+
+  return [...messages, ...readErrorText(source.cause, seen)];
 }
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
