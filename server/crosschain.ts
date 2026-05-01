@@ -4,6 +4,8 @@ import {
   decodeEventLog,
   getAddress,
   http,
+  isAddress,
+  isHex,
   type Address,
   type Hash,
   type Hex,
@@ -52,19 +54,27 @@ export type CrossChainSettlementResult = {
   settlement: CrossChainPaymentState;
 };
 
-type ServerRouteConfig = {
-  chainId: RemotePaymentSourceChainId | typeof ARC_DESTINATION_CHAIN_ID;
+type BaseServerRouteConfig<TChainId extends RemotePaymentSourceChainId | typeof ARC_DESTINATION_CHAIN_ID> = {
+  chainId: TChainId;
   rpcUrl: string;
-  sourceContract?: Address;
-  settlementContract?: Address;
   tokenAddress: Address;
   relayerPrivateKey?: Hex;
 };
 
+type SourceRouteConfig = BaseServerRouteConfig<RemotePaymentSourceChainId> & {
+  sourceContract: Address;
+};
+
+type DestinationRouteConfig = BaseServerRouteConfig<typeof ARC_DESTINATION_CHAIN_ID> & {
+  settlementContract: Address;
+};
+
+type ServerRouteConfig = SourceRouteConfig | DestinationRouteConfig;
+
 type SourceReceiptLog = {
   address: Address;
   data: Hex;
-  topics: readonly [Hex, ...Hex[]] | readonly [];
+  topics: [Hex, ...Hex[]] | [];
   logIndex?: number | null;
 };
 
@@ -101,7 +111,7 @@ export async function resolveCrossChainSourcePayment(
 
   return resolveSourcePaymentLog(request, receipt, {
     chainId: sourceChainIdInput,
-    sourceContract: requireSourceContract(config),
+    sourceContract: config.sourceContract,
     tokenAddress: config.tokenAddress
   });
 }
@@ -122,8 +132,9 @@ export function resolveSourcePaymentLog(
   const expectedRequestId = requestIdToBytes32(request.id).toLowerCase();
   const expectedAmount = parseTokenAmount(request.amount, request.token);
   const matchingLog = receipt.logs
-    .filter((log) => log.address.toLowerCase() === config.sourceContract?.toLowerCase())
-    .map((log) => decodeSourcePaymentLog(log as SourceReceiptLog))
+    .map((log) => readSourceReceiptLog(log, config.sourceContract))
+    .filter((log): log is SourceReceiptLog => log !== undefined)
+    .map(decodeSourcePaymentLog)
     .find((decoded) => {
       if (!decoded) {
         return false;
@@ -214,12 +225,10 @@ function decodeSourcePaymentLog(log: SourceReceiptLog) {
     const decoded = decodeEventLog({
       abi: [qrPaymentInitiatedEvent],
       data: log.data,
-      topics: [...log.topics] as [] | [Hex, ...Hex[]]
-    }) as {
-      eventName?: string;
-      args?: unknown;
-    };
-    if (decoded.eventName !== "QrPaymentInitiated" || !isSourcePaymentArgs(decoded.args)) {
+      eventName: "QrPaymentInitiated",
+      topics: log.topics
+    });
+    if (!isSourcePaymentArgs(decoded.args)) {
       return undefined;
     }
     const args = decoded.args;
@@ -236,6 +245,57 @@ function decodeSourcePaymentLog(log: SourceReceiptLog) {
   } catch {
     return undefined;
   }
+}
+
+function readSourceReceiptLog(log: TransactionReceipt["logs"][number], sourceContract: Address): SourceReceiptLog | undefined {
+  const value: unknown = log;
+  if (!isRecord(value)) {
+    return undefined;
+  }
+
+  const { address, data, logIndex } = value;
+  const topics = readLogTopics(value.topics);
+  if (
+    typeof address !== "string" ||
+    !isAddress(address) ||
+    address.toLowerCase() !== sourceContract.toLowerCase() ||
+    typeof data !== "string" ||
+    !isHex(data) ||
+    !topics ||
+    (logIndex !== undefined && logIndex !== null && typeof logIndex !== "number")
+  ) {
+    return undefined;
+  }
+
+  return {
+    address,
+    data,
+    topics,
+    logIndex: typeof logIndex === "number" ? logIndex : undefined
+  };
+}
+
+function readLogTopics(value: unknown): SourceReceiptLog["topics"] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+
+  const topics: Hex[] = [];
+  for (const topic of value) {
+    if (!isHex(topic)) {
+      return undefined;
+    }
+    topics.push(topic);
+  }
+
+  if (topics.length === 0) {
+    return [];
+  }
+  return [topics[0], ...topics.slice(1)];
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object";
 }
 
 function isSourcePaymentArgs(args: unknown): args is DecodedSourcePaymentArgs {
@@ -255,7 +315,7 @@ function isSourcePaymentArgs(args: unknown): args is DecodedSourcePaymentArgs {
   );
 }
 
-async function readSourceReceipt(config: ServerRouteConfig, txHash: Hash): Promise<TransactionReceipt> {
+async function readSourceReceipt(config: SourceRouteConfig, txHash: Hash): Promise<TransactionReceipt> {
   try {
     return await createServerPublicClient(config).getTransactionReceipt({ hash: txHash });
   } catch {
@@ -263,24 +323,24 @@ async function readSourceReceipt(config: ServerRouteConfig, txHash: Hash): Promi
   }
 }
 
-async function submitSettlement(config: ServerRouteConfig, proof: Hex): Promise<TransactionReceipt> {
+async function submitSettlement(config: DestinationRouteConfig, proof: Hex): Promise<TransactionReceipt> {
   if (!config.relayerPrivateKey) {
     throw new Error(`Relayer private key for ${CROSSCHAIN_CHAINS[config.chainId].label} is not configured.`);
   }
 
   const account = privateKeyToAccount(config.relayerPrivateKey);
+  const chain = CROSSCHAIN_CHAINS[config.chainId].chain;
   const publicClient = createServerPublicClient(config);
   const walletClient = createWalletClient({
     account,
-    chain: CROSSCHAIN_CHAINS[config.chainId].chain,
+    chain,
     transport: http(config.rpcUrl, {
       timeout: 15_000
     })
   });
   const hash = await walletClient.writeContract({
-    address: requireSettlementContract(config),
+    address: config.settlementContract,
     abi: qrPaymentSettlementAbi,
-    chain: CROSSCHAIN_CHAINS[config.chainId].chain,
     functionName: "settle",
     args: [proof]
   });
@@ -289,20 +349,6 @@ async function submitSettlement(config: ServerRouteConfig, proof: Hex): Promise<
     hash,
     confirmations: 1
   });
-}
-
-function requireSettlementContract(config: ServerRouteConfig): Address {
-  if (!config.settlementContract) {
-    throw new Error(`Settlement contract for ${CROSSCHAIN_CHAINS[config.chainId].label} is not configured.`);
-  }
-  return config.settlementContract;
-}
-
-function requireSourceContract(config: ServerRouteConfig): Address {
-  if (!config.sourceContract) {
-    throw new Error(`Source contract for ${CROSSCHAIN_CHAINS[config.chainId].label} is not configured.`);
-  }
-  return config.sourceContract;
 }
 
 function createServerPublicClient(config: ServerRouteConfig) {
@@ -315,9 +361,17 @@ function createServerPublicClient(config: ServerRouteConfig) {
 }
 
 function readServerRouteConfig(
+  chainId: RemotePaymentSourceChainId,
+  use: "source"
+): SourceRouteConfig;
+function readServerRouteConfig(
+  chainId: typeof ARC_DESTINATION_CHAIN_ID,
+  use: "destination"
+): DestinationRouteConfig;
+function readServerRouteConfig(
   chainId: RemotePaymentSourceChainId | typeof ARC_DESTINATION_CHAIN_ID,
   use: "source" | "destination"
-): ServerRouteConfig {
+): SourceRouteConfig | DestinationRouteConfig {
   const prefix =
     chainId === ARC_DESTINATION_CHAIN_ID ? "ARC" : chainId === BASE_SEPOLIA_CHAIN_ID ? "BASE_SEPOLIA" : "MEGAETH";
   const tokenAddress =
@@ -330,28 +384,51 @@ function readServerRouteConfig(
     use === "destination"
       ? readAddress(`${prefix}_QR_PAYMENT_SETTLEMENT`) ?? readAddress(`VITE_${prefix}_QR_PAYMENT_SETTLEMENT`)
       : undefined;
+  const rpcUrl = process.env[`${prefix}_RPC_URL`]?.trim() || CROSSCHAIN_CHAINS[chainId].rpcUrl;
+  const relayerPrivateKey = readPrivateKey(`${prefix}_RELAYER_PRIVATE_KEY`);
 
-  const missing = [];
-  if (!tokenAddress) {
-    missing.push("USDC token address");
+  if (use === "source") {
+    if (!isRemotePaymentSourceChainId(chainId)) {
+      throw new Error("Arc cannot be configured as a Polymer source route.");
+    }
+
+    if (!tokenAddress || !sourceContract) {
+      const missing = [];
+      if (!tokenAddress) {
+        missing.push("USDC token address");
+      }
+      if (!sourceContract) {
+        missing.push("source contract");
+      }
+      throw new Error(`Cross-chain ${use} route for ${CROSSCHAIN_CHAINS[chainId].label} is missing ${missing.join(", ")}.`);
+    }
+
+    return {
+      chainId,
+      rpcUrl,
+      sourceContract,
+      tokenAddress,
+      relayerPrivateKey
+    };
   }
-  if (use === "source" && !sourceContract) {
-    missing.push("source contract");
-  }
-  if (use === "destination" && !settlementContract) {
-    missing.push("settlement contract");
-  }
-  if (missing.length) {
+
+  if (!tokenAddress || !settlementContract) {
+    const missing = [];
+    if (!tokenAddress) {
+      missing.push("USDC token address");
+    }
+    if (!settlementContract) {
+      missing.push("settlement contract");
+    }
     throw new Error(`Cross-chain ${use} route for ${CROSSCHAIN_CHAINS[chainId].label} is missing ${missing.join(", ")}.`);
   }
 
   return {
-    chainId,
-    rpcUrl: process.env[`${prefix}_RPC_URL`]?.trim() || CROSSCHAIN_CHAINS[chainId].rpcUrl,
-    sourceContract,
+    chainId: ARC_DESTINATION_CHAIN_ID,
+    rpcUrl,
     settlementContract,
-    tokenAddress: tokenAddress as Address,
-    relayerPrivateKey: readPrivateKey(`${prefix}_RELAYER_PRIVATE_KEY`)
+    tokenAddress,
+    relayerPrivateKey
   };
 }
 
