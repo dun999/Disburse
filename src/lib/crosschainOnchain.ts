@@ -141,7 +141,12 @@ export async function submitCrossChainPayment(
   provider: EthereumProvider,
   account: Address,
   request: PaymentRequest,
-  sourceChainId: RemotePaymentSourceChainId
+  sourceChainId: RemotePaymentSourceChainId,
+  callbacks: {
+    onApprovalRequested?: () => void;
+    onApprovalConfirmed?: () => void;
+    onPaymentRequested?: () => void;
+  } = {}
 ): Promise<Hash> {
   const walletChainId = await getWalletChainId(provider);
   if (walletChainId !== sourceChainId) {
@@ -159,6 +164,7 @@ export async function submitCrossChainPayment(
   });
 
   if (allowance < amount) {
+    callbacks.onApprovalRequested?.();
     const approveHash = await requestWalletTransaction(provider, {
       from: account,
       to: route.tokenAddress,
@@ -177,8 +183,10 @@ export async function submitCrossChainPayment(
       spender: route.sourceContract,
       token: route.tokenAddress
     });
+    callbacks.onApprovalConfirmed?.();
   }
 
+  callbacks.onPaymentRequested?.();
   return requestWalletTransaction(provider, {
     from: account,
     to: route.sourceContract,

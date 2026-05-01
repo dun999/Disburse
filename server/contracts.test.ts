@@ -20,6 +20,7 @@ describe("cross-chain payment contract invariants", () => {
 
   it("settlement validates source, event signature, route, and replay before transfer", () => {
     const settlement = readFileSync(join(contractsDir, "QrPaymentSettlement.sol"), "utf8");
+    const requestReplayCheck = settlement.indexOf("require(!settledRequests[requestId]");
     const replayCheck = settlement.indexOf("require(!settled[settlementId]");
     const transfer = settlement.indexOf("transfer(recipient, amount)");
 
@@ -28,7 +29,9 @@ describe("cross-chain payment contract invariants", () => {
     expect(settlement).toContain("eventSelector == QR_PAYMENT_INITIATED_SELECTOR");
     expect(settlement).toContain("destinationChainId == block.chainid");
     expect(settlement).toContain("destinationTokens[sourceChainId][sourceToken]");
+    expect(requestReplayCheck).toBeGreaterThan(0);
     expect(replayCheck).toBeGreaterThan(0);
+    expect(transfer).toBeGreaterThan(requestReplayCheck);
     expect(transfer).toBeGreaterThan(replayCheck);
   });
 });

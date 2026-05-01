@@ -35,6 +35,7 @@ contract QrPaymentSettlement {
     mapping(uint32 => mapping(address => bool)) public allowedSources;
     mapping(uint32 => mapping(address => address)) public destinationTokens;
     mapping(bytes32 => bool) public settled;
+    mapping(bytes32 => bool) public settledRequests;
 
     modifier onlyOwner() {
         require(msg.sender == owner, "not owner");
@@ -96,6 +97,7 @@ contract QrPaymentSettlement {
             abi.decode(unindexedData, (address, uint256, uint256, uint256));
 
         require(destinationChainId == block.chainid, "wrong destination");
+        require(!settledRequests[requestId], "request already settled");
         address destinationToken = destinationTokens[sourceChainId][sourceToken];
         require(destinationToken != address(0), "unsupported token route");
 
@@ -114,6 +116,7 @@ contract QrPaymentSettlement {
         );
         require(!settled[settlementId], "already settled");
         settled[settlementId] = true;
+        settledRequests[requestId] = true;
 
         require(IERC20(destinationToken).transfer(recipient, amount), "settlement transfer failed");
 

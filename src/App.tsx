@@ -86,7 +86,8 @@ import {
   confirmRemoteQrPayment,
   createRemoteQrRequest,
   fetchRemoteQrStatus,
-  recordRemoteQrSubmission
+  recordRemoteQrSubmission,
+  type QrConfirmationPayload
 } from "./lib/qrApi";
 import { applyQrRealtimeEvent, shouldHideQrForStatus, type QrRealtimeEvent, type QrStatusPayload } from "./lib/realtime";
 import { getSupabaseBrowserClient } from "./lib/supabaseClient";
@@ -1030,7 +1031,26 @@ function App() {
       setPayNotice({ tone: "info", text: "Open your wallet and approve the payment." });
 
       const hash = isRemoteSource
-        ? await submitCrossChainPayment(provider, account, requestWithAttempt, paySourceChainId)
+        ? await submitCrossChainPayment(provider, account, requestWithAttempt, paySourceChainId, {
+            onApprovalRequested: () => {
+              setPayNotice({
+                tone: "info",
+                text: "First approve USDC spending in your wallet. A second wallet prompt will confirm the QR payment."
+              });
+            },
+            onApprovalConfirmed: () => {
+              setPayNotice({
+                tone: "info",
+                text: "USDC approval confirmed. Open your wallet again and confirm the QR payment."
+              });
+            },
+            onPaymentRequested: () => {
+              setPayNotice({
+                tone: "info",
+                text: "Confirm the QR payment transaction. This is the hash the verifier needs."
+              });
+            }
+          })
         : await submitPayment(provider, account, requestWithAttempt);
       setPayLifecycle("submitted");
       setPayNotice({
@@ -1084,11 +1104,8 @@ function App() {
       });
       if (remoteConfirmation) {
         applyQrStatusPayload(remoteConfirmation, setRequests, setReceipts);
-        setPayLifecycle(remoteConfirmation.status === "paid" ? "verified" : "failed");
-        setPayNotice({
-          tone: remoteConfirmation.status === "paid" ? "success" : "error",
-          text: remoteConfirmation.message ?? (remoteConfirmation.status === "paid" ? "Payment confirmed." : "Payment failed.")
-        });
+        setPayLifecycle(remoteConfirmationToLifecycle(remoteConfirmation));
+        setPayNotice(remoteConfirmationToNotice(remoteConfirmation));
       } else if (isRemoteSource) {
         setPayLifecycle("proving");
         setPayNotice({
@@ -1158,11 +1175,8 @@ function App() {
           : undefined;
       if (remoteConfirmation) {
         applyQrStatusPayload(remoteConfirmation, setRequests, setReceipts);
-        setPayLifecycle(remoteConfirmation.status === "paid" ? "verified" : "failed");
-        setPayNotice({
-          tone: remoteConfirmation.status === "paid" ? "success" : "error",
-          text: remoteConfirmation.message ?? (remoteConfirmation.status === "paid" ? "Payment confirmed." : "Payment failed.")
-        });
+        setPayLifecycle(remoteConfirmationToLifecycle(remoteConfirmation));
+        setPayNotice(remoteConfirmationToNotice(remoteConfirmation));
       } else if (usesRemoteSource(request, request.settlement?.sourceChainId ?? paySourceChainId)) {
         setPayLifecycle(crossChainSourceHash ? "proving" : "idle");
         setPayNotice({
@@ -2705,6 +2719,35 @@ function formatPayLifecycle(lifecycle: PayLifecycle): string {
     default:
       return lifecycle.replace("_", " ");
   }
+}
+
+function remoteConfirmationToLifecycle(confirmation: QrConfirmationPayload): PayLifecycle {
+  if (confirmation.status === "paid") {
+    return "verified";
+  }
+  if (confirmation.status === "failed") {
+    return "failed";
+  }
+  return confirmation.request.settlement?.stage === "settling" ? "settling" : "proving";
+}
+
+function remoteConfirmationToNotice(confirmation: QrConfirmationPayload): Notice {
+  if (confirmation.status === "paid") {
+    return {
+      tone: "success",
+      text: confirmation.message ?? "Payment settled on Arc. Invoice is ready."
+    };
+  }
+  if (confirmation.status === "failed") {
+    return {
+      tone: "error",
+      text: confirmation.message ?? "Payment failed."
+    };
+  }
+  return {
+    tone: "info",
+    text: confirmation.message ?? "Source payment is still being checked for Arc settlement."
+  };
 }
 
 function getPayButtonLabel(isPaying: boolean, lifecycle: PayLifecycle): string {

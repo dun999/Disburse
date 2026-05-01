@@ -390,7 +390,10 @@ async function confirmStoredCrossChainQrPayment(
     );
   } catch (error) {
     if (isRecoverableCrossChainSourceError(error)) {
-      return keepCrossChainRequestOpen(request, txHash, errorToFailureMessage(error), sourceChainIdInput);
+      return keepCrossChainRequestOpen(request, txHash, errorToFailureMessage(error), {
+        retainHash: shouldRetainRecoverableSourceHash(error),
+        sourceChainIdInput
+      });
     }
     return failCrossChainRequest(request, txHash, errorToFailureMessage(error));
   }
@@ -444,21 +447,7 @@ async function confirmStoredCrossChainQrPayment(
       message: "Payment settled on Arc. Invoice is ready."
     };
   } catch (error) {
-    return failCrossChainRequest(
-      {
-        ...request,
-        settlement: {
-          destinationChainId: ARC_DESTINATION_CHAIN_ID,
-          sourceChainId: sourcePayment.sourceChainId,
-          sourceTxHash: sourcePayment.sourceTxHash,
-          sourceBlockNumber: sourcePayment.sourceBlockNumber,
-          sourceLogIndex: sourcePayment.sourceLogIndex,
-          stage: "settling"
-        }
-      },
-      txHash,
-      errorToFailureMessage(error)
-    );
+    return keepCrossChainSettlementPending(request, sourcePayment, errorToFailureMessage(error));
   }
 }
 
@@ -499,19 +488,24 @@ async function keepCrossChainRequestOpen(
   request: PaymentRequest,
   txHash: Hash,
   message: string,
-  sourceChainIdInput?: unknown
+  options: {
+    retainHash: boolean;
+    sourceChainIdInput?: unknown;
+  }
 ) {
   const openRequest: PaymentRequest = {
     ...request,
     status: "open",
-    txHash,
+    txHash: options.retainHash ? txHash : undefined,
     settlement: request.destinationChainId
       ? {
           ...request.settlement,
           destinationChainId: ARC_DESTINATION_CHAIN_ID,
-          sourceChainId: isPaymentSourceChainId(sourceChainIdInput) ? sourceChainIdInput : request.settlement?.sourceChainId,
-          sourceTxHash: txHash,
-          stage: "submitted"
+          sourceChainId: isPaymentSourceChainId(options.sourceChainIdInput)
+            ? options.sourceChainIdInput
+            : request.settlement?.sourceChainId,
+          sourceTxHash: options.retainHash ? txHash : undefined,
+          stage: options.retainHash ? "submitted" : undefined
         }
       : request.settlement
   };
@@ -529,6 +523,43 @@ async function keepCrossChainRequestOpen(
   return {
     status: "open" as const,
     request: openRequest,
+    message
+  };
+}
+
+async function keepCrossChainSettlementPending(
+  request: PaymentRequest,
+  sourcePayment: CrossChainSourcePayment,
+  message: string
+) {
+  const pendingRequest: PaymentRequest = {
+    ...request,
+    status: "open",
+    txHash: sourcePayment.sourceTxHash,
+    settlement: {
+      destinationChainId: ARC_DESTINATION_CHAIN_ID,
+      sourceChainId: sourcePayment.sourceChainId,
+      sourceTxHash: sourcePayment.sourceTxHash,
+      sourceBlockNumber: sourcePayment.sourceBlockNumber,
+      sourceLogIndex: sourcePayment.sourceLogIndex,
+      stage: "settling",
+      failureReason: message
+    }
+  };
+  await updatePaymentRequest(pendingRequest, message);
+  await insertQrEvent({
+    request_id: pendingRequest.id,
+    event_type: "settling",
+    status: "open",
+    message,
+    tx_hash: sourcePayment.sourceTxHash,
+    submitted_at: pendingRequest.submittedAt,
+    settlement: pendingRequest.settlement
+  });
+
+  return {
+    status: "open" as const,
+    request: pendingRequest,
     message
   };
 }
@@ -660,4 +691,12 @@ function isRecoverableCrossChainSourceError(error: unknown): boolean {
     error.message.includes("not sent to the configured QR payment contract") ||
     error.message.includes("missing its global log index")
   );
+}
+
+function shouldRetainRecoverableSourceHash(error: unknown): boolean {
+  if (!(error instanceof HttpError)) {
+    return false;
+  }
+
+  return error.message.includes("receipt is not available") || error.message.includes("missing its global log index");
 }
