@@ -25,6 +25,8 @@ import { createExpiry, parseTokenAmount, type PaymentRequest } from "./payments"
 
 const WALLET_APPROVAL_TIMEOUT_MS = 5 * 60_000;
 const RECEIPT_WAIT_TIMEOUT_MS = 120_000;
+const ALLOWANCE_WAIT_TIMEOUT_MS = 30_000;
+const ALLOWANCE_POLL_INTERVAL_MS = 1_500;
 const SOURCE_PAYMENT_GAS_FALLBACK = 150_000n;
 
 export async function switchToCrossChain(provider: EthereumProvider, chainId: PaymentSourceChainId): Promise<void> {
@@ -168,17 +170,13 @@ export async function submitCrossChainPayment(
       value: "0x0"
     });
     await waitForCrossChainReceipt(sourceChainId, approveHash);
-    const confirmedAllowance = await client.readContract({
-      address: route.tokenAddress,
-      abi: crossChainErc20Abi,
-      functionName: "allowance",
-      args: [account, route.sourceContract]
+    await waitForCrossChainAllowance(client, {
+      account,
+      amount,
+      sourceChainId,
+      spender: route.sourceContract,
+      token: route.tokenAddress
     });
-    if (confirmedAllowance < amount) {
-      throw new Error(
-        `USDC approval confirmed, but ${getCrossChain(sourceChainId).label} still reports insufficient allowance for the QR payment contract. Approve spender ${route.sourceContract}, then try again.`
-      );
-    }
   }
 
   return requestWalletTransaction(provider, {
@@ -195,7 +193,7 @@ export async function submitCrossChainPayment(
 }
 
 export async function waitForCrossChainReceipt(sourceChainId: RemotePaymentSourceChainId, hash: Hash): Promise<void> {
-  await withTimeout(
+  const receipt = await withTimeout(
     createCrossChainPublicClient(sourceChainId).waitForTransactionReceipt({
       hash,
       confirmations: 1
@@ -203,6 +201,10 @@ export async function waitForCrossChainReceipt(sourceChainId: RemotePaymentSourc
     RECEIPT_WAIT_TIMEOUT_MS,
     `Transaction ${hash} was submitted, but ${getCrossChain(sourceChainId).label} did not return a receipt yet. Use Verify in a minute.`
   );
+
+  if (receipt.status !== "success") {
+    throw new Error(`Transaction ${hash} reverted on ${getCrossChain(sourceChainId).label}.`);
+  }
 }
 
 export function createCrossChainPublicClient(chainId: PaymentSourceChainId) {
@@ -258,6 +260,38 @@ async function estimateSourcePaymentGas(estimate: () => Promise<bigint>, needsAp
 
     return SOURCE_PAYMENT_GAS_FALLBACK;
   }
+}
+
+async function waitForCrossChainAllowance(
+  client: ReturnType<typeof createCrossChainPublicClient>,
+  input: {
+    account: Address;
+    amount: bigint;
+    sourceChainId: RemotePaymentSourceChainId;
+    spender: Address;
+    token: Address;
+  }
+): Promise<void> {
+  const deadline = Date.now() + ALLOWANCE_WAIT_TIMEOUT_MS;
+  let allowance = 0n;
+
+  while (Date.now() <= deadline) {
+    allowance = await client.readContract({
+      address: input.token,
+      abi: crossChainErc20Abi,
+      functionName: "allowance",
+      args: [input.account, input.spender]
+    });
+    if (allowance >= input.amount) {
+      return;
+    }
+
+    await sleep(ALLOWANCE_POLL_INTERVAL_MS);
+  }
+
+  throw new Error(
+    `USDC approval was mined, but ${getCrossChain(input.sourceChainId).label} still reports allowance ${formatUnits(allowance, 6)} USDC for the QR payment contract. Approve spender ${input.spender}, then try again.`
+  );
 }
 
 async function requestWalletTransaction(
@@ -340,4 +374,8 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: s
       clearTimeout(timeoutId);
     }
   }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
