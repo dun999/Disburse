@@ -1,5 +1,6 @@
 import {
   createPublicClient,
+  decodeEventLog,
   encodeFunctionData,
   formatUnits,
   getAddress,
@@ -14,6 +15,7 @@ import {
   crossChainErc20Abi,
   getCrossChain,
   isRemotePaymentSourceChainId,
+  qrPaymentInitiatedEvent,
   qrPaymentSourceAbi,
   requestIdToBytes32,
   type PaymentSourceChainId,
@@ -187,7 +189,7 @@ export async function submitCrossChainPayment(
   }
 
   callbacks.onPaymentRequested?.();
-  return requestWalletTransaction(provider, {
+  const paymentHash = await requestWalletTransaction(provider, {
     from: account,
     to: route.sourceContract,
     data: encodeFunctionData({
@@ -198,6 +200,8 @@ export async function submitCrossChainPayment(
     value: "0x0",
     nonce: numberToHex(await readPendingNonceOnChain(account, sourceChainId))
   });
+  await waitForCrossChainPaymentReceipt(sourceChainId, paymentHash, request, route.sourceContract);
+  return paymentHash;
 }
 
 export async function waitForCrossChainReceipt(sourceChainId: RemotePaymentSourceChainId, hash: Hash): Promise<void> {
@@ -212,6 +216,38 @@ export async function waitForCrossChainReceipt(sourceChainId: RemotePaymentSourc
 
   if (receipt.status !== "success") {
     throw new Error(`Transaction ${hash} reverted on ${getCrossChain(sourceChainId).label}.`);
+  }
+}
+
+export async function waitForCrossChainPaymentReceipt(
+  sourceChainId: RemotePaymentSourceChainId,
+  hash: Hash,
+  request: PaymentRequest,
+  expectedSourceContract?: Address
+): Promise<void> {
+  const route = requireCrossChainBrowserRoute(sourceChainId);
+  const sourceContract = expectedSourceContract ?? route.sourceContract;
+  const receipt = await withTimeout(
+    createCrossChainPublicClient(sourceChainId).waitForTransactionReceipt({
+      hash,
+      confirmations: 1
+    }),
+    RECEIPT_WAIT_TIMEOUT_MS,
+    `Transaction ${hash} was submitted, but ${getCrossChain(sourceChainId).label} did not return a receipt yet. Use Verify in a minute.`
+  );
+
+  if (receipt.status !== "success") {
+    throw new Error(`QR payment transaction ${hash} reverted on ${getCrossChain(sourceChainId).label}.`);
+  }
+  if (receipt.to?.toLowerCase() !== sourceContract.toLowerCase()) {
+    throw new Error(
+      `Wallet returned ${hash}, but it was sent to ${receipt.to ?? "an unknown contract"} instead of the QR payment contract ${sourceContract}. Confirm the QR pay transaction, not a USDC token transaction.`
+    );
+  }
+  if (!receipt.logs.some((log) => isExpectedSourcePaymentLog(log, request, sourceContract, route.tokenAddress))) {
+    throw new Error(
+      `QR payment transaction ${hash} did not emit the expected payment event. The source-chain USDC may have moved without a Polymer-provable QR payment event.`
+    );
   }
 }
 
@@ -249,6 +285,40 @@ function buildCrossChainPayArgs(
     BigInt(Math.floor(Date.parse(request.expiresAt ?? createExpiry(request.createdAt)) / 1000)),
     buildCrossChainNonce(request.id, sourceChainId, request.destinationChainId)
   ];
+}
+
+function isExpectedSourcePaymentLog(
+  log: {
+    address: Address;
+    data: `0x${string}`;
+    topics: [] | [`0x${string}`, ...`0x${string}`[]];
+  },
+  request: PaymentRequest,
+  sourceContract: Address,
+  tokenAddress: Address
+): boolean {
+  if (log.address.toLowerCase() !== sourceContract.toLowerCase()) {
+    return false;
+  }
+
+  try {
+    const decoded = decodeEventLog({
+      abi: [qrPaymentInitiatedEvent],
+      data: log.data,
+      topics: log.topics
+    });
+
+    return (
+      decoded.eventName === "QrPaymentInitiated" &&
+      decoded.args.requestId.toLowerCase() === requestIdToBytes32(request.id).toLowerCase() &&
+      decoded.args.recipient.toLowerCase() === request.recipient.toLowerCase() &&
+      decoded.args.token.toLowerCase() === tokenAddress.toLowerCase() &&
+      decoded.args.amount === parseTokenAmount(request.amount, request.token) &&
+      decoded.args.destinationChainId === BigInt(request.destinationChainId ?? 0)
+    );
+  } catch {
+    return false;
+  }
 }
 
 async function readPendingNonceOnChain(account: Address, sourceChainId: RemotePaymentSourceChainId): Promise<number> {

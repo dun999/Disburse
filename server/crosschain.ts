@@ -228,7 +228,7 @@ export async function relayCrossChainSettlement(
       sourceTxHash: sourcePayment.sourceTxHash,
       sourceBlockNumber: sourcePayment.sourceBlockNumber,
       sourceLogIndex: sourcePayment.sourceLogIndex,
-      proofJobId,
+      proofJobId: String(proofJobId),
       destinationTxHash: destinationReceipt.transactionHash,
       destinationBlockNumber: destinationReceipt.blockNumber.toString(),
       stage: "settled"

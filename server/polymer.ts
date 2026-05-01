@@ -24,7 +24,7 @@ type PolymerJsonRpcResponse<T> = {
   };
 };
 
-export async function requestPolymerProof(input: PolymerProofRequest): Promise<string> {
+export async function requestPolymerProof(input: PolymerProofRequest): Promise<number> {
   const result = await polymerRpc<number | string>("proof_request", [
     {
       srcChainId: input.srcChainId,
@@ -32,14 +32,14 @@ export async function requestPolymerProof(input: PolymerProofRequest): Promise<s
       globalLogIndex: input.globalLogIndex
     }
   ]);
-  return String(result);
+  return readPolymerJobId(result);
 }
 
-export async function queryPolymerProof(jobId: string): Promise<PolymerProofResult> {
+export async function queryPolymerProof(jobId: number): Promise<PolymerProofResult> {
   return polymerRpc<PolymerProofResult>("proof_query", [jobId]);
 }
 
-export async function pollPolymerProof(jobId: string, options: { attempts?: number; intervalMs?: number } = {}): Promise<Hex> {
+export async function pollPolymerProof(jobId: number, options: { attempts?: number; intervalMs?: number } = {}): Promise<Hex> {
   const attempts = options.attempts ?? 15;
   const intervalMs = options.intervalMs ?? 2_000;
 
@@ -55,6 +55,14 @@ export async function pollPolymerProof(jobId: string, options: { attempts?: numb
   }
 
   throw new Error("Polymer proof generation timed out.");
+}
+
+function readPolymerJobId(value: number | string): number {
+  const jobId = typeof value === "number" ? value : Number(value);
+  if (!Number.isInteger(jobId) || jobId < 0) {
+    throw new Error("Polymer proof request returned an invalid job id.");
+  }
+  return jobId;
 }
 
 export function decodePolymerProofToHex(proof: string): Hex {
