@@ -8,7 +8,7 @@ import {
   type Hash,
   type Hex
 } from "viem";
-import { ARC_CHAIN_ID, ARC_EXPLORER_URL, ARC_RPC_URL, arcTestnet } from "./arc";
+import { ARC_CHAIN_ID, ARC_EXPLORER_URL, ARC_RPC_URL, arcTestnet } from "./arc.js";
 
 export const BASE_SEPOLIA_CHAIN_ID = 84_532;
 export const MEGAETH_TESTNET_CHAIN_ID = 6_343;

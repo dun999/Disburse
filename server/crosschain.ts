@@ -7,7 +7,6 @@ import {
   type Address,
   type Hash,
   type Hex,
-  type Log,
   type TransactionReceipt
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
@@ -62,6 +61,23 @@ type ServerRouteConfig = {
   relayerPrivateKey?: Hex;
 };
 
+type SourceReceiptLog = {
+  address: Address;
+  data: Hex;
+  topics: readonly [Hex, ...Hex[]] | readonly [];
+  logIndex?: number | null;
+};
+
+type DecodedSourcePaymentArgs = {
+  requestId: Hex;
+  payer: Address;
+  recipient: Address;
+  token: Address;
+  amount: bigint;
+  destinationChainId: bigint;
+  nonce: bigint;
+};
+
 export async function resolveCrossChainSourcePayment(
   request: PaymentRequest,
   txHash: Hash,
@@ -107,7 +123,7 @@ export function resolveSourcePaymentLog(
   const expectedAmount = parseTokenAmount(request.amount, request.token);
   const matchingLog = receipt.logs
     .filter((log) => log.address.toLowerCase() === config.sourceContract?.toLowerCase())
-    .map((log) => decodeSourcePaymentLog(log))
+    .map((log) => decodeSourcePaymentLog(log as SourceReceiptLog))
     .find((decoded) => {
       if (!decoded) {
         return false;
@@ -193,25 +209,20 @@ export function readCreateCrossChainInput(input: Record<string, unknown>): {
   };
 }
 
-function decodeSourcePaymentLog(log: Log) {
+function decodeSourcePaymentLog(log: SourceReceiptLog) {
   try {
     const decoded = decodeEventLog({
       abi: [qrPaymentInitiatedEvent],
       data: log.data,
-      topics: log.topics
-    });
-    if (decoded.eventName !== "QrPaymentInitiated") {
+      topics: [...log.topics] as [] | [Hex, ...Hex[]]
+    }) as {
+      eventName?: string;
+      args?: unknown;
+    };
+    if (decoded.eventName !== "QrPaymentInitiated" || !isSourcePaymentArgs(decoded.args)) {
       return undefined;
     }
-    const args = decoded.args as {
-      requestId: Hex;
-      payer: Address;
-      recipient: Address;
-      token: Address;
-      amount: bigint;
-      destinationChainId: bigint;
-      nonce: bigint;
-    };
+    const args = decoded.args;
     return {
       requestId: args.requestId,
       payer: getAddress(args.payer),
@@ -225,6 +236,23 @@ function decodeSourcePaymentLog(log: Log) {
   } catch {
     return undefined;
   }
+}
+
+function isSourcePaymentArgs(args: unknown): args is DecodedSourcePaymentArgs {
+  if (!args || typeof args !== "object") {
+    return false;
+  }
+
+  const candidate = args as Record<string, unknown>;
+  return (
+    typeof candidate.requestId === "string" &&
+    typeof candidate.payer === "string" &&
+    typeof candidate.recipient === "string" &&
+    typeof candidate.token === "string" &&
+    typeof candidate.amount === "bigint" &&
+    typeof candidate.destinationChainId === "bigint" &&
+    typeof candidate.nonce === "bigint"
+  );
 }
 
 async function readSourceReceipt(config: ServerRouteConfig, txHash: Hash): Promise<TransactionReceipt> {
@@ -252,6 +280,7 @@ async function submitSettlement(config: ServerRouteConfig, proof: Hex): Promise<
   const hash = await walletClient.writeContract({
     address: requireSettlementContract(config),
     abi: qrPaymentSettlementAbi,
+    chain: CROSSCHAIN_CHAINS[config.chainId].chain,
     functionName: "settle",
     args: [proof]
   });
