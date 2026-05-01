@@ -1,0 +1,59 @@
+{
+  "deployedAt": "2026-05-01T15:54:15.081Z",
+  "deployer": "0x6D183A6c0c37A13B3Db5C159795cC10F23b2E75D",
+  "mode": "add-monad-source",
+  "prover": "0x03Fb5bFA4EB2Cba072A477A372bB87880A60fC96",
+  "contracts": {
+    "arcSettlement": {
+      "chainId": 5042002,
+      "address": "0x8c535227Ed2B2963a3c1176510BC59e7A7fEF07D"
+    },
+    "monadSource": {
+      "chainId": 10143,
+      "address": "0x8c535227ed2b2963a3c1176510bc59e7a7fef07d",
+      "txHash": "0x543952c778e48816c5dbe12536bd07dee25d5501ed341148e93888de3ffbcc43",
+      "explorerUrl": "https://testnet.monadscan.com/tx/0x543952c778e48816c5dbe12536bd07dee25d5501ed341148e93888de3ffbcc43"
+    }
+  },
+  "tokens": {
+    "arcUsdc": "0x3600000000000000000000000000000000000000",
+    "monadSourceToken": "0x534b2f3A21130d7a60830c2Df862319e593943A3"
+  },
+  "disabledSources": {
+    "oldMegaEth": {
+      "chainId": 6343,
+      "sourceContract": "0x8c535227Ed2B2963a3c1176510BC59e7A7fEF07D"
+    }
+  },
+  "configured": true,
+  "configuration": {
+    "allowedSources": {
+      "monad": {
+        "transactionChainId": 5042002,
+        "txHash": "0x791953703f9b43a988ddaace1b804636a8a35dce01ce3f4cdec7c8824baf3835",
+        "explorerUrl": "https://testnet.arcscan.app/tx/0x791953703f9b43a988ddaace1b804636a8a35dce01ce3f4cdec7c8824baf3835",
+        "chainId": 10143,
+        "sourceContract": "0x8c535227ed2b2963a3c1176510bc59e7a7fef07d",
+        "allowed": true
+      },
+      "oldMegaEth": {
+        "transactionChainId": 5042002,
+        "txHash": "0x7832b59d1ac3d971065ab6666d8c5bd9e287b3503bd016e3a032db08b6311a95",
+        "explorerUrl": "https://testnet.arcscan.app/tx/0x7832b59d1ac3d971065ab6666d8c5bd9e287b3503bd016e3a032db08b6311a95",
+        "chainId": 6343,
+        "sourceContract": "0x8c535227Ed2B2963a3c1176510BC59e7A7fEF07D",
+        "allowed": false
+      }
+    },
+    "tokenRoutes": {
+      "monad": {
+        "transactionChainId": 5042002,
+        "txHash": "0x5196fd30b46fb122248bf9e0309f9e8c1a8f94f26faf3a42550a581c238d9b62",
+        "explorerUrl": "https://testnet.arcscan.app/tx/0x5196fd30b46fb122248bf9e0309f9e8c1a8f94f26faf3a42550a581c238d9b62",
+        "chainId": 10143,
+        "sourceToken": "0x534b2f3A21130d7a60830c2Df862319e593943A3",
+        "destinationToken": "0x3600000000000000000000000000000000000000"
+      }
+    }
+  }
+}

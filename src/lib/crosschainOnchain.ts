@@ -275,7 +275,7 @@ function buildCrossChainPayArgs(
     throw new Error("Arc-settlement QR request is missing the Arc destination chain.");
   }
   if (!isRemotePaymentSourceChainId(sourceChainId)) {
-    throw new Error("Source chain must be Base Sepolia or MegaETH for escrow payment.");
+    throw new Error("Source chain must be Base Sepolia or Monad Testnet for escrow payment.");
   }
 
   return [

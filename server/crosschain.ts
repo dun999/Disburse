@@ -17,7 +17,7 @@ import {
   ARC_DESTINATION_CHAIN_ID,
   BASE_SEPOLIA_CHAIN_ID,
   CROSSCHAIN_CHAINS,
-  MEGAETH_TESTNET_CHAIN_ID,
+  MONAD_TESTNET_CHAIN_ID,
   getCrossChainExplorerTxUrl,
   getAllowedSourceChainIds,
   isRemotePaymentSourceChainId,
@@ -74,14 +74,13 @@ type ServerRouteConfig = SourceRouteConfig | DestinationRouteConfig;
 
 const DEPLOYED_ARC_SETTLEMENT = "0x8c535227ed2b2963a3c1176510bc59e7a7fef07d" as Address;
 const DEPLOYED_BASE_SEPOLIA_USDC = "0x036CbD53842c5426634e7929541eC2318f3dCF7e" as Address;
-const DEPLOYED_MEGAETH_USDC = "0xd4db9b3dc633f7b1403f4ba2281aa1aca43296d8" as Address;
-const DEPLOYED_SOURCE_CONTRACTS = {
-  [BASE_SEPOLIA_CHAIN_ID]: DEPLOYED_ARC_SETTLEMENT,
-  [MEGAETH_TESTNET_CHAIN_ID]: DEPLOYED_ARC_SETTLEMENT
-} as const satisfies Record<RemotePaymentSourceChainId, Address>;
+const DEPLOYED_MONAD_USDC = "0x534b2f3A21130d7a60830c2Df862319e593943A3" as Address;
+const DEPLOYED_SOURCE_CONTRACTS: Partial<Record<RemotePaymentSourceChainId, Address>> = {
+  [BASE_SEPOLIA_CHAIN_ID]: DEPLOYED_ARC_SETTLEMENT
+};
 const DEPLOYED_SOURCE_TOKENS = {
   [BASE_SEPOLIA_CHAIN_ID]: DEPLOYED_BASE_SEPOLIA_USDC,
-  [MEGAETH_TESTNET_CHAIN_ID]: DEPLOYED_MEGAETH_USDC
+  [MONAD_TESTNET_CHAIN_ID]: DEPLOYED_MONAD_USDC
 } as const satisfies Record<RemotePaymentSourceChainId, Address>;
 
 type SourceReceiptLog = {
@@ -416,7 +415,16 @@ function readServerRouteConfig(
   use: "source" | "destination"
 ): SourceRouteConfig | DestinationRouteConfig {
   const prefix =
-    chainId === ARC_DESTINATION_CHAIN_ID ? "ARC" : chainId === BASE_SEPOLIA_CHAIN_ID ? "BASE_SEPOLIA" : "MEGAETH";
+    chainId === ARC_DESTINATION_CHAIN_ID
+      ? "ARC"
+      : chainId === BASE_SEPOLIA_CHAIN_ID
+        ? "BASE_SEPOLIA"
+        : chainId === MONAD_TESTNET_CHAIN_ID
+          ? "MONAD"
+          : undefined;
+  if (!prefix) {
+    throw new Error(`Unsupported cross-chain route ${chainId}.`);
+  }
   let tokenAddress =
     readAddress(`${prefix}_USDC_ADDRESS`) ??
     readAddress(`VITE_${prefix}_USDC_ADDRESS`) ??

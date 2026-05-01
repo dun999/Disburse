@@ -2,8 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   ARC_DESTINATION_CHAIN_ID,
   BASE_SEPOLIA_CHAIN_ID,
-  MEGAETH_TESTNET_CHAIN_ID,
+  MONAD_TESTNET_CHAIN_ID,
   buildCrossChainNonce,
+  getCrossChain,
   requestIdToBytes32
 } from "./crosschain";
 import {
@@ -24,7 +25,7 @@ const crossChainRequest: PaymentRequest = {
   startBlock: "0",
   status: "open",
   destinationChainId: ARC_DESTINATION_CHAIN_ID,
-  allowedSourceChainIds: [ARC_DESTINATION_CHAIN_ID, BASE_SEPOLIA_CHAIN_ID, MEGAETH_TESTNET_CHAIN_ID],
+  allowedSourceChainIds: [ARC_DESTINATION_CHAIN_ID, BASE_SEPOLIA_CHAIN_ID, MONAD_TESTNET_CHAIN_ID],
   settlement: {
     destinationChainId: ARC_DESTINATION_CHAIN_ID
   }
@@ -45,9 +46,36 @@ describe("cross-chain QR payloads", () => {
       token: "USDC",
       amount: "12.34",
       destinationChainId: ARC_DESTINATION_CHAIN_ID,
-      allowedSourceChainIds: [ARC_DESTINATION_CHAIN_ID, BASE_SEPOLIA_CHAIN_ID, MEGAETH_TESTNET_CHAIN_ID],
+      allowedSourceChainIds: [ARC_DESTINATION_CHAIN_ID, BASE_SEPOLIA_CHAIN_ID, MONAD_TESTNET_CHAIN_ID],
       startBlock: "0",
       status: "open"
+    });
+  });
+
+  it("filters old MegaETH source ids from scanned v2 payloads", () => {
+    const decoded = decodeRequestPayload(
+      encodeRawPayload({
+        version: 2,
+        id: crossChainRequest.id,
+        recipient: crossChainRequest.recipient,
+        token: "USDC",
+        amount: "12.34",
+        label: "Old route",
+        createdAt: crossChainRequest.createdAt,
+        destinationChainId: ARC_DESTINATION_CHAIN_ID,
+        allowedSourceChainIds: [BASE_SEPOLIA_CHAIN_ID, 6_343]
+      })
+    );
+
+    expect(decoded.allowedSourceChainIds).toEqual([BASE_SEPOLIA_CHAIN_ID]);
+  });
+
+  it("exposes Monad as a remote payment source with MON gas", () => {
+    expect(getCrossChain(MONAD_TESTNET_CHAIN_ID)).toMatchObject({
+      label: "Monad Testnet",
+      rpcUrl: "https://testnet-rpc.monad.xyz",
+      explorerUrl: "https://testnet.monadscan.com",
+      nativeSymbol: "MON"
     });
   });
 

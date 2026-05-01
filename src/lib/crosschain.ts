@@ -11,10 +11,10 @@ import {
 import { ARC_CHAIN_ID, ARC_EXPLORER_URL, ARC_RPC_URL, arcTestnet } from "./arc.js";
 
 export const BASE_SEPOLIA_CHAIN_ID = 84_532;
-export const MEGAETH_TESTNET_CHAIN_ID = 6_343;
+export const MONAD_TESTNET_CHAIN_ID = 10_143;
 export const ARC_DESTINATION_CHAIN_ID = ARC_CHAIN_ID;
-export const REMOTE_PAYMENT_SOURCE_CHAIN_IDS = [BASE_SEPOLIA_CHAIN_ID, MEGAETH_TESTNET_CHAIN_ID] as const;
-export const PAYMENT_SOURCE_CHAIN_IDS = [ARC_CHAIN_ID, BASE_SEPOLIA_CHAIN_ID, MEGAETH_TESTNET_CHAIN_ID] as const;
+export const REMOTE_PAYMENT_SOURCE_CHAIN_IDS = [BASE_SEPOLIA_CHAIN_ID, MONAD_TESTNET_CHAIN_ID] as const;
+export const PAYMENT_SOURCE_CHAIN_IDS = [ARC_CHAIN_ID, BASE_SEPOLIA_CHAIN_ID, MONAD_TESTNET_CHAIN_ID] as const;
 export const CROSSCHAIN_CHAIN_IDS = PAYMENT_SOURCE_CHAIN_IDS;
 export const POLYMER_TESTNET_PROVER_ADDRESS = "0x03Fb5bFA4EB2Cba072A477A372bB87880A60fC96" as Address;
 
@@ -65,23 +65,23 @@ export const baseSepolia = defineChain({
   testnet: true
 });
 
-export const megaEthTestnet = defineChain({
-  id: MEGAETH_TESTNET_CHAIN_ID,
-  name: "MegaETH Testnet",
+export const monadTestnet = defineChain({
+  id: MONAD_TESTNET_CHAIN_ID,
+  name: "Monad Testnet",
   nativeCurrency: {
-    name: "Ether",
-    symbol: "ETH",
+    name: "Monad",
+    symbol: "MON",
     decimals: 18
   },
   rpcUrls: {
     default: {
-      http: ["https://carrot.megaeth.com/rpc"]
+      http: ["https://testnet-rpc.monad.xyz"]
     }
   },
   blockExplorers: {
     default: {
-      name: "MegaETH Blockscout",
-      url: "https://megaeth-testnet-v2.blockscout.com"
+      name: "Monadscan",
+      url: "https://testnet.monadscan.com"
     }
   },
   testnet: true
@@ -106,14 +106,14 @@ export const CROSSCHAIN_CHAINS = {
     explorerUrl: "https://sepolia-explorer.base.org",
     nativeSymbol: "ETH"
   },
-  [MEGAETH_TESTNET_CHAIN_ID]: {
-    id: MEGAETH_TESTNET_CHAIN_ID,
-    key: "megaeth-testnet",
-    label: "MegaETH Testnet",
-    chain: megaEthTestnet,
-    rpcUrl: "https://carrot.megaeth.com/rpc",
-    explorerUrl: "https://megaeth-testnet-v2.blockscout.com",
-    nativeSymbol: "ETH"
+  [MONAD_TESTNET_CHAIN_ID]: {
+    id: MONAD_TESTNET_CHAIN_ID,
+    key: "monad-testnet",
+    label: "Monad Testnet",
+    chain: monadTestnet,
+    rpcUrl: "https://testnet-rpc.monad.xyz",
+    explorerUrl: "https://testnet.monadscan.com",
+    nativeSymbol: "MON"
   }
 } as const;
 
@@ -148,11 +148,11 @@ export function isCrossChainId(value: unknown): value is CrossChainId {
 }
 
 export function isPaymentSourceChainId(value: unknown): value is PaymentSourceChainId {
-  return value === ARC_CHAIN_ID || value === BASE_SEPOLIA_CHAIN_ID || value === MEGAETH_TESTNET_CHAIN_ID;
+  return value === ARC_CHAIN_ID || value === BASE_SEPOLIA_CHAIN_ID || value === MONAD_TESTNET_CHAIN_ID;
 }
 
 export function isRemotePaymentSourceChainId(value: unknown): value is RemotePaymentSourceChainId {
-  return value === BASE_SEPOLIA_CHAIN_ID || value === MEGAETH_TESTNET_CHAIN_ID;
+  return value === BASE_SEPOLIA_CHAIN_ID || value === MONAD_TESTNET_CHAIN_ID;
 }
 
 export function getCrossChain(chainId: PaymentSourceChainId) {

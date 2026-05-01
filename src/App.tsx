@@ -15,6 +15,7 @@ import {
   ARC_DESTINATION_CHAIN_ID,
   BASE_SEPOLIA_CHAIN_ID,
   getAllowedSourceChainIds,
+  getCrossChain,
   getCrossChainExplorerTxUrl,
   getCrossChainLabel,
   isRemotePaymentSourceChainId,
@@ -2119,7 +2120,7 @@ function PayRequestPage({
                   insufficientToken={insufficientToken}
                   missingGas={missingGas}
                   networkLabel={getCrossChainLabel(sourceChainId)}
-                  nativeSymbol={usesRemoteSource(request, sourceChainId) ? "ETH" : "USDC"}
+                  nativeSymbol={getCrossChain(sourceChainId).nativeSymbol}
                 />
               )}
 

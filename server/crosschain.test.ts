@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   ARC_DESTINATION_CHAIN_ID,
   BASE_SEPOLIA_CHAIN_ID,
+  MONAD_TESTNET_CHAIN_ID,
   qrPaymentSourceAbi,
   requestIdToBytes32
 } from "../src/lib/crosschain";
@@ -16,7 +17,9 @@ const sourceContract = "0x4444444444444444444444444444444444444444";
 const livePayer = "0xedc2e82b99267060adea22ebda307a23497a7e5e";
 const liveRecipient = "0x3d6a8babf5e08103B8DAF66A8608F13B761017ad";
 const liveBaseUsdc = "0x036CbD53842c5426634e7929541eC2318f3dCF7e";
+const liveMonadUsdc = "0x534b2f3A21130d7a60830c2Df862319e593943A3";
 const liveSourceContract = "0x8c535227ed2b2963a3c1176510bc59e7a7fef07d";
+const monadSourceContract = "0x5555555555555555555555555555555555555555";
 const livePayHash = "0xc71bbcf8d3f612b8d02b3401fb360399a32eddfc7f49a044ca79eeee4b0f1038";
 const liveApprovalHash = "0x52d86d0423300c9bf1a7dd76e30079bdceba0d233c527e7d15602191651f1273";
 
@@ -128,6 +131,26 @@ describe("cross-chain source payment resolution", () => {
       restoreEnv("BASE_SEPOLIA_USDC_ADDRESS", previousToken);
       restoreEnv("BASE_SEPOLIA_QR_PAYMENT_SOURCE", previousSource);
       restoreEnv("VITE_BASE_SEPOLIA_QR_PAYMENT_SOURCE", previousViteSource);
+    }
+  });
+
+  it("uses Monad env prefix and falls back to Circle testnet USDC when token env is wrong", () => {
+    const previousToken = process.env.MONAD_USDC_ADDRESS;
+    const previousSource = process.env.MONAD_QR_PAYMENT_SOURCE;
+    const previousViteSource = process.env.VITE_MONAD_QR_PAYMENT_SOURCE;
+    try {
+      process.env.MONAD_USDC_ADDRESS = monadSourceContract;
+      process.env.MONAD_QR_PAYMENT_SOURCE = monadSourceContract;
+      delete process.env.VITE_MONAD_QR_PAYMENT_SOURCE;
+
+      const config = readServerRouteConfigForTest(MONAD_TESTNET_CHAIN_ID, "source");
+
+      expect(config.sourceContract.toLowerCase()).toBe(monadSourceContract);
+      expect(config.tokenAddress.toLowerCase()).toBe(liveMonadUsdc.toLowerCase());
+    } finally {
+      restoreEnv("MONAD_USDC_ADDRESS", previousToken);
+      restoreEnv("MONAD_QR_PAYMENT_SOURCE", previousSource);
+      restoreEnv("VITE_MONAD_QR_PAYMENT_SOURCE", previousViteSource);
     }
   });
 });

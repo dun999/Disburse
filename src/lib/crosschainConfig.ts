@@ -1,6 +1,7 @@
 import { getAddress, isAddress, type Address } from "viem";
 import {
   BASE_SEPOLIA_CHAIN_ID,
+  MONAD_TESTNET_CHAIN_ID,
   type RemotePaymentSourceChainId,
   type CrossChainRouteConfig
 } from "./crosschain";
@@ -10,7 +11,11 @@ type ViteEnv = Record<string, string | boolean | undefined>;
 const env = import.meta.env as ViteEnv;
 
 export function getCrossChainBrowserRoute(chainId: RemotePaymentSourceChainId): CrossChainRouteConfig {
-  const prefix = chainId === BASE_SEPOLIA_CHAIN_ID ? "BASE_SEPOLIA" : "MEGAETH";
+  const prefix =
+    chainId === BASE_SEPOLIA_CHAIN_ID ? "BASE_SEPOLIA" : chainId === MONAD_TESTNET_CHAIN_ID ? "MONAD" : undefined;
+  if (!prefix) {
+    throw new Error(`Unsupported cross-chain source route ${chainId}.`);
+  }
   return {
     chainId,
     sourceContract: readAddress(`VITE_${prefix}_QR_PAYMENT_SOURCE`),

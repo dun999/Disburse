@@ -5,7 +5,7 @@ Disburse is a client-side Arc Testnet payment console for wallet-signed stableco
 It supports two current flows:
 
 - **Payments**: send USDC or EURC directly from the connected wallet to a recipient address.
-- **QR Payments**: create a USDC request to an Arc Testnet recipient, share it as a QR code, let the payer choose Arc Testnet, Base Sepolia, or MegaETH Testnet as the source, and generate a PDF invoice after settlement.
+- **QR Payments**: create a USDC request to an Arc Testnet recipient, share it as a QR code, let the payer choose Arc Testnet, Base Sepolia, or Monad Testnet as the source, and generate a PDF invoice after settlement.
 
 
 ## Stack
@@ -61,32 +61,33 @@ VITE_BASE_SEPOLIA_QR_PAYMENT_SOURCE=
 BASE_SEPOLIA_USDC_ADDRESS=
 BASE_SEPOLIA_QR_PAYMENT_SOURCE=
 
-VITE_MEGAETH_USDC_ADDRESS=
-VITE_MEGAETH_QR_PAYMENT_SOURCE=
-MEGAETH_USDC_ADDRESS=
-MEGAETH_QR_PAYMENT_SOURCE=
+VITE_MONAD_USDC_ADDRESS=0x534b2f3A21130d7a60830c2Df862319e593943A3
+VITE_MONAD_QR_PAYMENT_SOURCE=
+MONAD_RPC_URL=https://testnet-rpc.monad.xyz
+MONAD_USDC_ADDRESS=0x534b2f3A21130d7a60830c2Df862319e593943A3
+MONAD_QR_PAYMENT_SOURCE=
 ```
 
 Contract deployment helper:
 
 ```bash
 npm run deploy:qr-contracts -- --compile-only
-npm run deploy:qr-contracts
+npm run deploy:qr-contracts -- --add-monad-source
 ```
 
-The deployment helper reads `QR_DEPLOYER_PRIVATE_KEY`, source USDC addresses, and optional RPC overrides from local env files or the process environment. It writes deployment metadata to `deployments/` and public contract addresses to `.env.qr-contracts.generated`.
+The Monad migration helper reads `QR_DEPLOYER_PRIVATE_KEY`, `ARC_QR_PAYMENT_SETTLEMENT`, Monad USDC/source settings, the old MegaETH source address if overridden, and optional RPC overrides from local env files or the process environment. It deploys only the Monad `QrPaymentSource`, configures the existing Arc settlement contract, disables the old MegaETH source authorization, writes deployment metadata to `deployments/`, and writes public contract addresses to `.env.qr-contracts.generated`. Use `npm run deploy:qr-contracts -- --full` only when intentionally deploying a fresh Arc/Base/Monad contract set.
 
 Current testnet deployment:
 
 - Arc settlement contract: `0x8c535227ed2b2963a3c1176510bc59e7a7fef07d`
 - Base Sepolia source contract: `0x8c535227ed2b2963a3c1176510bc59e7a7fef07d`
-- MegaETH Testnet source contract: `0x8c535227ed2b2963a3c1176510bc59e7a7fef07d`
+- Monad Testnet source contract: set `MONAD_QR_PAYMENT_SOURCE` after running the Monad deployment helper.
 - Base Sepolia USDC: `0x036CbD53842c5426634e7929541eC2318f3dCF7e`
-- MegaETH Testnet mock USDC: `0xd4db9b3dc633f7b1403f4ba2281aa1aca43296d8`
+- Monad Testnet USDC: `0x534b2f3A21130d7a60830c2Df862319e593943A3`
 - Arc USDC: `0x3600000000000000000000000000000000000000`
 - Arc settlement liquidity: `10 USDC`
 
-Deployment and configuration metadata is recorded in `deployments/qr-contracts-1777594760061.json`. The generated public env file is `.env.qr-contracts.generated`; it is ignored by git and should be copied into local or Vercel environment settings as needed.
+Existing Arc/Base deployment metadata is recorded in `deployments/qr-contracts-1777594760061.json`; the Monad migration helper will add a new deployment JSON. The generated public env file is `.env.qr-contracts.generated`; it is ignored by git and should be copied into local or Vercel environment settings as needed.
 
 ## Routes
 
@@ -113,10 +114,10 @@ QR payment source choices currently target:
 
 - Arc Testnet: chain ID `5042002`, RPC failover listed above, explorer `https://testnet.arcscan.app`.
 - Base Sepolia: chain ID `84532`, RPC `https://sepolia.base.org`, explorer `https://sepolia-explorer.base.org`.
-- MegaETH Testnet: chain ID `6343`, RPC `https://carrot.megaeth.com/rpc`, explorer `https://megaeth-testnet-v2.blockscout.com`.
+- Monad Testnet: chain ID `10143`, RPC `https://testnet-rpc.monad.xyz`, explorer `https://testnet.monadscan.com`, gas token `MON`.
 - Polymer testnet prover: `0x03Fb5bFA4EB2Cba072A477A372bB87880A60fC96`.
 
-QR Payments are USDC-only and always settle on Arc Testnet. Arc source payments use the existing Arc ERC-20 transfer path. Base Sepolia and MegaETH source payments use a configured 6-decimal ERC-20 source token, `QrPaymentSource` escrow, Polymer proof, and a prefunded Arc `QrPaymentSettlement` contract. Polymer proves the source escrow event; it does not supply liquidity by itself.
+QR Payments are USDC-only and always settle on Arc Testnet. Arc source payments use the existing Arc ERC-20 transfer path. Base Sepolia and Monad source payments use a configured 6-decimal ERC-20 source token, `QrPaymentSource` escrow, Polymer proof, and a prefunded Arc `QrPaymentSettlement` contract. Polymer proves the source escrow event; it does not supply liquidity by itself. Monad payers need Monad Testnet `MON` for gas and Monad Testnet USDC from Circle's faucet.
 
 ## Wallet Flow
 
@@ -170,7 +171,7 @@ Current QR requests use payload version `2`:
   dueAt?: string,
   createdAt: string,
   destinationChainId: 5042002,
-  allowedSourceChainIds: Array<5042002 | 84532 | 6343>
+  allowedSourceChainIds: Array<5042002 | 84532 | 10143>
 }
 ```
 
@@ -180,7 +181,7 @@ The scanned payer page locks the request details. The payer can connect a wallet
 
 When Supabase is configured, QR requests are also written through Vercel API functions. The payer reports submitted transaction hashes and the selected source chain to `/api/qr-submissions`; after confirmation, `/api/qr-confirmations` either verifies Arc Testnet ERC-20 transfer logs or settles a remote source payment on Arc. Requester screens subscribe to `payment_request_events`, so paid, failed, and expired states close the QR and replace it with a final status panel.
 
-For Base Sepolia and MegaETH sources, `/api/qr-confirmations` reads the source-chain `QrPaymentInitiated` log, requests a Polymer proof, submits `settle(proof)` to the Arc settlement contract from the configured backend relayer, and stores the Arc settlement receipt. Realtime event types include `submitted`, `proving`, `settling`, `paid`, `failed`, and `expired`.
+For Base Sepolia and Monad sources, `/api/qr-confirmations` reads the source-chain `QrPaymentInitiated` log, requests a Polymer proof, submits `settle(proof)` to the Arc settlement contract from the configured backend relayer, and stores the Arc settlement receipt. Realtime event types include `submitted`, `proving`, `settling`, `paid`, `failed`, and `expired`.
 
 ## Local Data
 
@@ -200,7 +201,7 @@ Direct Payments do not create QR request records. The page only keeps the latest
 
 ## Verification
 
-Direct and Arc-source QR verification checks Arc Testnet ERC-20 `Transfer` logs. Base Sepolia and MegaETH-source QR verification checks the source escrow event and the relayed Arc settlement receipt.
+Direct and Arc-source QR verification checks Arc Testnet ERC-20 `Transfer` logs. Base Sepolia and Monad-source QR verification checks the source escrow event and the relayed Arc settlement receipt.
 
 If a request has a known transaction hash, Disburse reads that transaction receipt first. Otherwise it scans logs from the request `startBlock` to latest in 10,000-block windows.
 
