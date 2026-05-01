@@ -2,6 +2,7 @@ import {
   createPublicClient,
   createWalletClient,
   decodeEventLog,
+  encodeFunctionData,
   getAddress,
   http,
   isAddress,
@@ -338,11 +339,16 @@ async function submitSettlement(config: DestinationRouteConfig, proof: Hex): Pro
       timeout: 15_000
     })
   });
-  const hash = await walletClient.writeContract({
-    address: config.settlementContract,
+  const data = encodeFunctionData({
     abi: qrPaymentSettlementAbi,
     functionName: "settle",
     args: [proof]
+  });
+  const hash = await walletClient.sendTransaction({
+    account,
+    chain,
+    to: config.settlementContract,
+    data
   });
 
   return publicClient.waitForTransactionReceipt({
