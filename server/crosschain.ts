@@ -1,6 +1,5 @@
 import {
   createPublicClient,
-  createWalletClient,
   decodeEventLog,
   encodeFunctionData,
   getAddress,
@@ -13,7 +12,7 @@ import {
   type TransactionReceipt
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { TOKENS } from "../src/lib/arc.js";
+import { ARC_MIN_GAS_PRICE, TOKENS } from "../src/lib/arc.js";
 import {
   ARC_DESTINATION_CHAIN_ID,
   BASE_SEPOLIA_CHAIN_ID,
@@ -332,29 +331,41 @@ async function submitSettlement(config: DestinationRouteConfig, proof: Hex): Pro
   const account = privateKeyToAccount(config.relayerPrivateKey);
   const chain = CROSSCHAIN_CHAINS[config.chainId].chain;
   const publicClient = createServerPublicClient(config);
-  const walletClient = createWalletClient({
-    account,
-    chain,
-    transport: http(config.rpcUrl, {
-      timeout: 15_000
-    })
-  });
   const data = encodeFunctionData({
     abi: qrPaymentSettlementAbi,
     functionName: "settle",
     args: [proof]
   });
-  const hash = await walletClient.sendTransaction({
-    account,
-    chain,
+  const gas = await publicClient.estimateGas({
+    account: account.address,
     to: config.settlementContract,
     data
   });
+  const gasPrice = await publicClient.getGasPrice();
+  const serializedTransaction = await account.signTransaction({
+    chainId: chain.id,
+    to: config.settlementContract,
+    data,
+    gas,
+    gasPrice: gasPrice > ARC_MIN_GAS_PRICE ? gasPrice : ARC_MIN_GAS_PRICE,
+    nonce: await publicClient.getTransactionCount({
+      address: account.address,
+      blockTag: "pending"
+    }),
+    type: "legacy"
+  });
+  const hash = await publicClient.sendRawTransaction({
+    serializedTransaction
+  });
 
-  return publicClient.waitForTransactionReceipt({
+  const receipt = await publicClient.waitForTransactionReceipt({
     hash,
     confirmations: 1
   });
+  if (receipt.status !== "success") {
+    throw new Error(`Arc settlement transaction reverted: ${hash}`);
+  }
+  return receipt;
 }
 
 function createServerPublicClient(config: ServerRouteConfig) {
