@@ -184,17 +184,28 @@ export function rowToReceipt(row: PaymentReceiptRow): Receipt {
 
 export function applyQrRealtimeEvent(request: PaymentRequest, event: QrRealtimeEvent): AppliedQrEvent {
   const receipt = normalizeReceipt(event.receipt);
+  const clearsSubmittedHash = clearsRecoverableCrossChainHash(event);
   return {
     request: {
       ...request,
       status: event.status,
-      txHash: normalizeHash(event.tx_hash) ?? receipt?.txHash ?? request.txHash,
+      txHash: normalizeHash(event.tx_hash) ?? receipt?.txHash ?? (clearsSubmittedHash ? undefined : request.txHash),
       submittedAt: event.submitted_at ?? request.submittedAt,
       settlement: event.settlement ?? request.settlement
     },
     receipt,
     message: event.message
   };
+}
+
+function clearsRecoverableCrossChainHash(event: QrRealtimeEvent): boolean {
+  return (
+    event.event_type === "submitted" &&
+    event.status === "open" &&
+    Boolean(event.settlement) &&
+    !event.settlement?.sourceTxHash &&
+    !event.settlement?.stage
+  );
 }
 
 export function shouldHideQrForStatus(status: PaymentStatus): boolean {

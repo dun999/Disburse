@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { ARC_DESTINATION_CHAIN_ID, BASE_SEPOLIA_CHAIN_ID } from "./crosschain";
 import type { PaymentRequest, Receipt } from "./payments";
 import { applyQrRealtimeEvent, rowToPaymentRequest, shouldHideQrForStatus, paymentRequestToRow } from "./realtime";
 
@@ -52,6 +53,39 @@ describe("QR realtime event reducer", () => {
     expect(shouldHideQrForStatus("failed")).toBe(true);
     expect(shouldHideQrForStatus("expired")).toBe(true);
     expect(shouldHideQrForStatus("open")).toBe(false);
+  });
+
+  it("clears a recoverable cross-chain wrong hash from realtime state", () => {
+    const wrongHash = `0x${"d".repeat(64)}` as `0x${string}`;
+    const applied = applyQrRealtimeEvent(
+      {
+        ...request,
+        destinationChainId: ARC_DESTINATION_CHAIN_ID,
+        allowedSourceChainIds: [ARC_DESTINATION_CHAIN_ID, BASE_SEPOLIA_CHAIN_ID],
+        txHash: wrongHash,
+        settlement: {
+          destinationChainId: ARC_DESTINATION_CHAIN_ID,
+          sourceChainId: BASE_SEPOLIA_CHAIN_ID,
+          sourceTxHash: wrongHash,
+          stage: "proving"
+        }
+      },
+      {
+        request_id: request.id,
+        event_type: "submitted",
+        status: "open",
+        message: "Submit the QR pay transaction hash.",
+        tx_hash: null,
+        settlement: {
+          destinationChainId: ARC_DESTINATION_CHAIN_ID,
+          sourceChainId: BASE_SEPOLIA_CHAIN_ID
+        }
+      }
+    );
+
+    expect(applied.request.txHash).toBeUndefined();
+    expect(applied.request.settlement?.sourceTxHash).toBeUndefined();
+    expect(applied.request.settlement?.stage).toBeUndefined();
   });
 
   it("round-trips request rows without losing final failed state", () => {

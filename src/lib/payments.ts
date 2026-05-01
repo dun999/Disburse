@@ -340,7 +340,8 @@ export function mergeScannedRequest(existing: PaymentRequest | undefined, scanne
     ...scanned,
     submittedAt: existing.submittedAt,
     status: existing.status,
-    txHash: existing.txHash
+    txHash: existing.txHash,
+    settlement: existing.settlement ?? scanned.settlement
   });
 }
 

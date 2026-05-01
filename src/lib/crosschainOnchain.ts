@@ -146,6 +146,7 @@ export async function submitCrossChainPayment(
   sourceChainId: RemotePaymentSourceChainId,
   callbacks: {
     onApprovalRequested?: () => void;
+    onApprovalSubmitted?: (hash: Hash) => void;
     onApprovalConfirmed?: () => void;
     onPaymentRequested?: () => void;
   } = {}
@@ -177,6 +178,7 @@ export async function submitCrossChainPayment(
       }),
       value: "0x0"
     });
+    callbacks.onApprovalSubmitted?.(approveHash);
     await waitForCrossChainReceipt(sourceChainId, approveHash);
     await waitForCrossChainAllowance(client, {
       account,

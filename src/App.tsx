@@ -13,6 +13,7 @@ import { errorToMessage } from "./lib/errors";
 import { buildInvoiceFilename, formatInvoiceDate, generateInvoicePdf } from "./lib/invoice";
 import {
   ARC_DESTINATION_CHAIN_ID,
+  BASE_SEPOLIA_CHAIN_ID,
   getAllowedSourceChainIds,
   getCrossChainExplorerTxUrl,
   getCrossChainLabel,
@@ -24,6 +25,7 @@ import {
   readCrossChainBalances,
   submitCrossChainPayment,
   switchToCrossChain,
+  waitForCrossChainPaymentReceipt,
   waitForCrossChainReceipt
 } from "./lib/crosschainOnchain";
 import {
@@ -425,6 +427,7 @@ function App() {
   const [isEstimatingPay, setIsEstimatingPay] = useState(false);
   const [isPayingQr, setIsPayingQr] = useState(false);
   const [payLifecycle, setPayLifecycle] = useState<PayLifecycle>("idle");
+  const [payApprovalHash, setPayApprovalHash] = useState<Hash>();
   const [isVerifying, setIsVerifying] = useState(false);
   const [isGeneratingInvoice, setIsGeneratingInvoice] = useState(false);
 
@@ -663,12 +666,14 @@ function App() {
       }
       setPayBalances(undefined);
       setPayEstimate(undefined);
+      setPayApprovalHash(undefined);
       setPayLifecycle("idle");
       setPayNotice({ tone: "info", text: "QR payment request loaded." });
     } catch (error) {
       setPayRequestId(undefined);
       setPayBalances(undefined);
       setPayEstimate(undefined);
+      setPayApprovalHash(undefined);
       setPayLifecycle("idle");
       setPayNotice({ tone: "error", text: errorToMessage(error) });
     }
@@ -687,6 +692,7 @@ function App() {
       setPayBalances(undefined);
       setDirectEstimate(undefined);
       setPayEstimate(undefined);
+      setPayApprovalHash(undefined);
     };
 
     const handleChain = (value: unknown) => {
@@ -695,6 +701,7 @@ function App() {
       setPayBalances(undefined);
       setDirectEstimate(undefined);
       setPayEstimate(undefined);
+      setPayApprovalHash(undefined);
     };
 
     provider.on("accountsChanged", handleAccounts);
@@ -999,6 +1006,7 @@ function App() {
 
     setIsPayingQr(true);
     setPayLifecycle("preparing");
+    setPayApprovalHash(undefined);
     setPayNotice({ tone: "info", text: "Preparing QR payment." });
 
     try {
@@ -1038,6 +1046,9 @@ function App() {
                 text: "First approve USDC spending in your wallet. A second wallet prompt will confirm the QR payment."
               });
             },
+            onApprovalSubmitted: (approvalHash) => {
+              setPayApprovalHash(approvalHash);
+            },
             onApprovalConfirmed: () => {
               setPayNotice({
                 tone: "info",
@@ -1061,6 +1072,9 @@ function App() {
       });
 
       let requestWithHash: PaymentRequest = { ...requestWithAttempt, txHash: hash };
+      if (isRemoteSource) {
+        await waitForCrossChainPaymentReceipt(paySourceChainId, hash, requestWithAttempt);
+      }
       try {
         const submission = await recordRemoteQrSubmission(
           request.id,
@@ -1159,15 +1173,28 @@ function App() {
     });
 
     try {
+      const verifySourceChainId = isCrossChainPaymentRequest(request)
+        ? request.settlement?.sourceChainId ?? paySourceChainId
+        : paySourceChainId;
       const crossChainSourceHash = isCrossChainPaymentRequest(request)
         ? request.settlement?.sourceTxHash ?? request.txHash
         : undefined;
+      if (crossChainSourceHash && usesRemoteSource(request, verifySourceChainId)) {
+        try {
+          await waitForCrossChainPaymentReceipt(verifySourceChainId, crossChainSourceHash, request);
+        } catch (error) {
+          setRequests((current) => upsertRequest(current, clearInvalidCrossChainSourceHash(request, verifySourceChainId)));
+          setPayLifecycle("idle");
+          setPayNotice({ tone: "error", text: errorToMessage(error) });
+          return;
+        }
+      }
       const remoteConfirmation = isCrossChainPaymentRequest(request)
         ? crossChainSourceHash
           ? await confirmRemoteQrPayment(
               request.id,
               crossChainSourceHash,
-              request.settlement?.sourceChainId ?? paySourceChainId
+              verifySourceChainId
             ).catch(() => undefined)
           : undefined
         : request.txHash
@@ -1436,6 +1463,7 @@ function App() {
           status={payDisplayStatus}
           balances={payBalances}
           estimate={payEstimate}
+          approvalHash={payApprovalHash}
           notice={payNotice}
           walletNotice={walletNotice}
           now={now}
@@ -1456,6 +1484,7 @@ function App() {
             setPaySourceChainId(chainId);
             setPayBalances(undefined);
             setPayEstimate(undefined);
+            setPayApprovalHash(undefined);
             setPayNotice(undefined);
           }}
           onEstimate={handlePayEstimate}
@@ -1926,6 +1955,7 @@ function PayRequestPage({
   status,
   balances,
   estimate,
+  approvalHash,
   notice,
   walletNotice,
   now,
@@ -1957,6 +1987,7 @@ function PayRequestPage({
   status: PaymentStatus;
   balances?: Balances;
   estimate?: TransferEstimate;
+  approvalHash?: Hash;
   notice?: Notice;
   walletNotice?: Notice;
   now: Date;
@@ -1988,6 +2019,7 @@ function PayRequestPage({
       : submittedTxHash
         ? toExplorerTxUrl(submittedTxHash)
         : undefined;
+  const approvalTxUrl = approvalHash ? getCrossChainExplorerTxUrl(sourceChainId, approvalHash) : undefined;
   const payButtonLabel = getPayButtonLabel(isPaying, lifecycle);
 
   return (
@@ -2130,6 +2162,23 @@ function PayRequestPage({
 
               {estimate && <EstimateGrid estimate={estimate} />}
               {notice && <NoticeBar notice={notice} />}
+
+              {approvalHash && !receipt && (
+                <div className="receipt-line">
+                  <div>
+                    <span>USDC approval</span>
+                    <strong>{shortAddress(approvalHash, 10, 8)}</strong>
+                  </div>
+                  <div className="receipt-actions">
+                    <button className="text-button" type="button" onClick={() => approvalTxUrl && onCopy(approvalTxUrl)}>
+                      Copy tx
+                    </button>
+                    <a href={approvalTxUrl} target="_blank" rel="noreferrer">
+                      Open tx
+                    </a>
+                  </div>
+                </div>
+              )}
 
               {submittedTxHash && !receipt && (
                 <div className="receipt-line">
@@ -2884,9 +2933,33 @@ function usesRemoteSource(
   return Boolean(isCrossChainPaymentRequest(request) && isRemotePaymentSourceChainId(sourceChainId));
 }
 
+function clearInvalidCrossChainSourceHash(request: PaymentRequest, sourceChainId: PaymentSourceChainId): PaymentRequest {
+  if (!isCrossChainPaymentRequest(request)) {
+    return request;
+  }
+
+  return {
+    ...request,
+    status: "open",
+    txHash: undefined,
+    settlement: {
+      ...request.settlement,
+      destinationChainId: ARC_DESTINATION_CHAIN_ID,
+      sourceChainId,
+      sourceTxHash: undefined,
+      stage: undefined,
+      failureReason: undefined
+    }
+  };
+}
+
 function chooseDefaultPaymentSource(request: PaymentRequest): PaymentSourceChainId {
   const allowed = isCrossChainPaymentRequest(request) ? request.allowedSourceChainIds : undefined;
-  return allowed?.includes(ARC_CHAIN_ID) ? ARC_CHAIN_ID : allowed?.[0] ?? ARC_CHAIN_ID;
+  return allowed?.includes(BASE_SEPOLIA_CHAIN_ID)
+    ? BASE_SEPOLIA_CHAIN_ID
+    : allowed?.includes(ARC_CHAIN_ID)
+      ? ARC_CHAIN_ID
+      : allowed?.[0] ?? ARC_CHAIN_ID;
 }
 
 function hasInsufficientNativeGas(balances: Balances | undefined, estimate?: TransferEstimate): boolean {

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { encodeAbiParameters, encodeEventTopics, type Log } from "viem";
 import { erc20Abi, TOKENS } from "./arc";
+import { ARC_DESTINATION_CHAIN_ID, BASE_SEPOLIA_CHAIN_ID } from "./crosschain";
 import {
   buildShareUrl,
   createExpiry,
@@ -122,6 +123,48 @@ describe("scanned request recovery", () => {
       status: "paid",
       submittedAt: "2026-04-28T00:03:00.000Z",
       txHash
+    });
+  });
+
+  it("preserves cross-chain settlement state when the same QR is reopened", () => {
+    const sourceTxHash = `0x${"c".repeat(64)}` as `0x${string}`;
+    const crossChainRequest: PaymentRequest = {
+      ...baseRequest,
+      id: "45d87251-9b45-4652-9196-e30814926749",
+      token: "USDC",
+      amount: "1",
+      startBlock: "0",
+      destinationChainId: ARC_DESTINATION_CHAIN_ID,
+      allowedSourceChainIds: [ARC_DESTINATION_CHAIN_ID, BASE_SEPOLIA_CHAIN_ID],
+      settlement: {
+        destinationChainId: ARC_DESTINATION_CHAIN_ID
+      }
+    };
+    const scanned = decodeRequestPayload(encodeRequestPayload(crossChainRequest));
+    const merged = mergeScannedRequest(
+      {
+        ...crossChainRequest,
+        submittedAt: "2026-05-01T06:11:40.000Z",
+        txHash: sourceTxHash,
+        settlement: {
+          destinationChainId: ARC_DESTINATION_CHAIN_ID,
+          sourceChainId: BASE_SEPOLIA_CHAIN_ID,
+          sourceTxHash,
+          sourceBlockNumber: "40923806",
+          sourceLogIndex: 1,
+          stage: "settling"
+        }
+      },
+      scanned
+    );
+
+    expect(merged.txHash).toBe(sourceTxHash);
+    expect(merged.settlement).toMatchObject({
+      sourceChainId: BASE_SEPOLIA_CHAIN_ID,
+      sourceTxHash,
+      sourceBlockNumber: "40923806",
+      sourceLogIndex: 1,
+      stage: "settling"
     });
   });
 

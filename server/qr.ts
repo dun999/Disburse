@@ -357,32 +357,6 @@ async function confirmStoredCrossChainQrPayment(
 
   let sourcePayment: CrossChainSourcePayment;
   try {
-    await updatePaymentRequest({
-      ...request,
-      settlement: {
-        ...request.settlement,
-        destinationChainId: ARC_DESTINATION_CHAIN_ID,
-        sourceChainId: isPaymentSourceChainId(sourceChainIdInput) ? sourceChainIdInput : request.settlement?.sourceChainId,
-        sourceTxHash: txHash,
-        stage: "proving"
-      }
-    });
-    await insertQrEvent({
-      request_id: request.id,
-      event_type: "proving",
-      status: "open",
-      message: "Source payment confirmed. Requesting Polymer proof.",
-      tx_hash: txHash,
-      submitted_at: request.submittedAt,
-      settlement: {
-        ...request.settlement,
-        destinationChainId: ARC_DESTINATION_CHAIN_ID,
-        sourceChainId: isPaymentSourceChainId(sourceChainIdInput) ? sourceChainIdInput : request.settlement?.sourceChainId,
-        sourceTxHash: txHash,
-        stage: "proving"
-      }
-    });
-
     sourcePayment = await resolveCrossChainSourcePayment(
       request,
       txHash,
@@ -398,9 +372,32 @@ async function confirmStoredCrossChainQrPayment(
     return failCrossChainRequest(request, txHash, errorToFailureMessage(error));
   }
 
+  const provedRequest: PaymentRequest = {
+    ...request,
+    txHash: sourcePayment.sourceTxHash,
+    settlement: {
+      destinationChainId: ARC_DESTINATION_CHAIN_ID,
+      sourceChainId: sourcePayment.sourceChainId,
+      sourceTxHash: sourcePayment.sourceTxHash,
+      sourceBlockNumber: sourcePayment.sourceBlockNumber,
+      sourceLogIndex: sourcePayment.sourceLogIndex,
+      stage: "proving"
+    }
+  };
+  await updatePaymentRequest(provedRequest);
+  await insertQrEvent({
+    request_id: provedRequest.id,
+    event_type: "proving",
+    status: "open",
+    message: "Source payment confirmed. Requesting Polymer proof.",
+    tx_hash: sourcePayment.sourceTxHash,
+    submitted_at: provedRequest.submittedAt,
+    settlement: provedRequest.settlement
+  });
+
   try {
     const provingRequest: PaymentRequest = {
-      ...request,
+      ...provedRequest,
       settlement: {
         destinationChainId: ARC_DESTINATION_CHAIN_ID,
         sourceChainId: sourcePayment.sourceChainId,
@@ -412,12 +409,12 @@ async function confirmStoredCrossChainQrPayment(
     };
     await updatePaymentRequest(provingRequest);
     await insertQrEvent({
-      request_id: request.id,
+      request_id: provingRequest.id,
       event_type: "settling",
       status: "open",
       message: "Polymer proof requested. Relaying settlement transaction.",
       tx_hash: sourcePayment.sourceTxHash,
-      submitted_at: request.submittedAt,
+      submitted_at: provingRequest.submittedAt,
       settlement: provingRequest.settlement
     });
 
@@ -447,7 +444,7 @@ async function confirmStoredCrossChainQrPayment(
       message: "Payment settled on Arc. Invoice is ready."
     };
   } catch (error) {
-    return keepCrossChainSettlementPending(request, sourcePayment, errorToFailureMessage(error));
+    return keepCrossChainSettlementPending(provedRequest, sourcePayment, errorToFailureMessage(error));
   }
 }
 
@@ -493,7 +490,34 @@ async function keepCrossChainRequestOpen(
     sourceChainIdInput?: unknown;
   }
 ) {
-  const openRequest: PaymentRequest = {
+  const openRequest = buildRecoverableCrossChainOpenRequest(request, txHash, options);
+  await updatePaymentRequest(openRequest);
+  await insertQrEvent({
+    request_id: openRequest.id,
+    event_type: "submitted",
+    status: "open",
+    message,
+    tx_hash: options.retainHash ? txHash : null,
+    submitted_at: openRequest.submittedAt,
+    settlement: openRequest.settlement
+  });
+
+  return {
+    status: "open" as const,
+    request: openRequest,
+    message
+  };
+}
+
+export function buildRecoverableCrossChainOpenRequest(
+  request: PaymentRequest,
+  txHash: Hash,
+  options: {
+    retainHash: boolean;
+    sourceChainIdInput?: unknown;
+  }
+): PaymentRequest {
+  return {
     ...request,
     status: "open",
     txHash: options.retainHash ? txHash : undefined,
@@ -505,25 +529,10 @@ async function keepCrossChainRequestOpen(
             ? options.sourceChainIdInput
             : request.settlement?.sourceChainId,
           sourceTxHash: options.retainHash ? txHash : undefined,
-          stage: options.retainHash ? "submitted" : undefined
+          stage: options.retainHash ? "submitted" : undefined,
+          failureReason: undefined
         }
       : request.settlement
-  };
-  await updatePaymentRequest(openRequest);
-  await insertQrEvent({
-    request_id: openRequest.id,
-    event_type: "submitted",
-    status: "open",
-    message,
-    tx_hash: txHash,
-    submitted_at: openRequest.submittedAt,
-    settlement: openRequest.settlement
-  });
-
-  return {
-    status: "open" as const,
-    request: openRequest,
-    message
   };
 }
 
