@@ -1,4 +1,5 @@
 import { type FormEvent, type MouseEvent, type ReactNode, type RefObject, useEffect, useMemo, useRef, useState } from "react";
+import { Analytics } from "@vercel/analytics/react";
 import { formatUnits, parseUnits, type Hash } from "viem";
 import {
   ARC_CHAIN_ID,
@@ -1454,6 +1455,7 @@ function App() {
 
       {page !== "pay" && page !== "docs" && <FAQSection />}
       <SiteFooter onNavigate={handleNavigate} />
+      <Analytics />
     </main>
   );
 }
