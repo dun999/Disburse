@@ -417,7 +417,7 @@ function readServerRouteConfig(
 ): SourceRouteConfig | DestinationRouteConfig {
   const prefix =
     chainId === ARC_DESTINATION_CHAIN_ID ? "ARC" : chainId === BASE_SEPOLIA_CHAIN_ID ? "BASE_SEPOLIA" : "MEGAETH";
-  const tokenAddress =
+  let tokenAddress =
     readAddress(`${prefix}_USDC_ADDRESS`) ??
     readAddress(`VITE_${prefix}_USDC_ADDRESS`) ??
     readDeployedTokenAddress(chainId) ??
@@ -440,6 +440,13 @@ function readServerRouteConfig(
   if (use === "source") {
     if (!isRemotePaymentSourceChainId(chainId)) {
       throw new Error("Arc cannot be configured as a Polymer source route.");
+    }
+
+    if (tokenAddress && sourceContract && tokenAddress.toLowerCase() === sourceContract.toLowerCase()) {
+      const deployedTokenAddress = readDeployedTokenAddress(chainId);
+      if (deployedTokenAddress && deployedTokenAddress.toLowerCase() !== sourceContract.toLowerCase()) {
+        tokenAddress = deployedTokenAddress;
+      }
     }
 
     if (!tokenAddress || !sourceContract) {
@@ -480,6 +487,23 @@ function readServerRouteConfig(
     tokenAddress,
     relayerPrivateKey
   };
+}
+
+export function readServerRouteConfigForTest(
+  chainId: RemotePaymentSourceChainId,
+  use: "source"
+): SourceRouteConfig;
+export function readServerRouteConfigForTest(
+  chainId: typeof ARC_DESTINATION_CHAIN_ID,
+  use: "destination"
+): DestinationRouteConfig;
+export function readServerRouteConfigForTest(
+  chainId: RemotePaymentSourceChainId | typeof ARC_DESTINATION_CHAIN_ID,
+  use: "source" | "destination"
+): SourceRouteConfig | DestinationRouteConfig {
+  return chainId === ARC_DESTINATION_CHAIN_ID
+    ? readServerRouteConfig(chainId, "destination")
+    : readServerRouteConfig(chainId, use as "source");
 }
 
 function readDeployedSourceContract(chainId: RemotePaymentSourceChainId | typeof ARC_DESTINATION_CHAIN_ID): Address | undefined {

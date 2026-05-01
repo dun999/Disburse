@@ -7,7 +7,7 @@ import {
   requestIdToBytes32
 } from "../src/lib/crosschain";
 import { parseTokenAmount, type PaymentRequest } from "../src/lib/payments";
-import { resolveSourcePaymentLog } from "./crosschain";
+import { readServerRouteConfigForTest, resolveSourcePaymentLog } from "./crosschain";
 
 const payer = "0x2222222222222222222222222222222222222222";
 const recipient = "0x1111111111111111111111111111111111111111";
@@ -109,6 +109,26 @@ describe("cross-chain source payment resolution", () => {
     ).toThrow(
       "The submitted transaction is a USDC token transaction, not the QR pay transaction. Submit or verify the hash from the wallet transaction that calls pay on the QR payment contract."
     );
+  });
+
+  it("falls back to the deployed token when production env points USDC at the source contract", () => {
+    const previousToken = process.env.BASE_SEPOLIA_USDC_ADDRESS;
+    const previousSource = process.env.BASE_SEPOLIA_QR_PAYMENT_SOURCE;
+    const previousViteSource = process.env.VITE_BASE_SEPOLIA_QR_PAYMENT_SOURCE;
+    try {
+      process.env.BASE_SEPOLIA_USDC_ADDRESS = liveSourceContract;
+      delete process.env.BASE_SEPOLIA_QR_PAYMENT_SOURCE;
+      process.env.VITE_BASE_SEPOLIA_QR_PAYMENT_SOURCE = liveSourceContract;
+
+      const config = readServerRouteConfigForTest(BASE_SEPOLIA_CHAIN_ID, "source");
+
+      expect(config.sourceContract.toLowerCase()).toBe(liveSourceContract);
+      expect(config.tokenAddress.toLowerCase()).toBe(liveBaseUsdc.toLowerCase());
+    } finally {
+      restoreEnv("BASE_SEPOLIA_USDC_ADDRESS", previousToken);
+      restoreEnv("BASE_SEPOLIA_QR_PAYMENT_SOURCE", previousSource);
+      restoreEnv("VITE_BASE_SEPOLIA_QR_PAYMENT_SOURCE", previousViteSource);
+    }
   });
 });
 
@@ -248,4 +268,12 @@ function liveApprovalReceipt(): TransactionReceipt {
     transactionIndex: 2,
     type: "legacy"
   } as TransactionReceipt;
+}
+
+function restoreEnv(key: string, value: string | undefined) {
+  if (value === undefined) {
+    delete process.env[key];
+  } else {
+    process.env[key] = value;
+  }
 }
