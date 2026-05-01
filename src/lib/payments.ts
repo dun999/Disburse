@@ -8,7 +8,14 @@ import {
   type Hash,
   type Hex
 } from "viem";
-import { ARC_EXPLORER_URL, TOKENS, erc20Abi } from "./arc.js";
+import { ARC_CHAIN_ID, ARC_EXPLORER_URL, TOKENS, erc20Abi } from "./arc.js";
+import {
+  ARC_DESTINATION_CHAIN_ID,
+  getAllowedSourceChainIds,
+  isPaymentSourceChainId,
+  type PaymentSourceChainId,
+  type CrossChainPaymentState
+} from "./crosschain.js";
 
 export type PaymentToken = keyof typeof TOKENS;
 
@@ -29,6 +36,9 @@ export type PaymentRequest = {
   startBlock: string;
   status: PaymentStatus;
   txHash?: Hash;
+  destinationChainId?: typeof ARC_DESTINATION_CHAIN_ID;
+  allowedSourceChainIds?: PaymentSourceChainId[];
+  settlement?: CrossChainPaymentState;
 };
 
 export type Receipt = {
@@ -41,10 +51,29 @@ export type Receipt = {
   blockNumber: string;
   confirmedAt: string;
   explorerUrl: string;
+  chainId?: number;
+  sourceChainId?: PaymentSourceChainId;
+  sourceTxHash?: Hash;
 };
 
 export type SharePayload = Omit<PaymentRequest, "status" | "txHash" | "submittedAt"> & {
   version: 1;
+};
+
+export type CrossChainSharePayload = {
+  version: 2;
+  id: string;
+  recipient: Address;
+  token: "USDC";
+  amount: string;
+  label: string;
+  note?: string;
+  invoiceDate?: string;
+  expiresAt?: string;
+  dueAt?: string;
+  createdAt: string;
+  destinationChainId: typeof ARC_DESTINATION_CHAIN_ID;
+  allowedSourceChainIds: PaymentSourceChainId[];
 };
 
 export type DecodedTransfer = {
@@ -220,6 +249,27 @@ export function refreshDerivedStatus(request: PaymentRequest, now = new Date()):
 }
 
 export function encodeRequestPayload(request: PaymentRequest): string {
+  if (isArcSettlementPaymentRequest(request)) {
+    const payload: CrossChainSharePayload = {
+      version: 2,
+      id: request.id,
+      recipient: request.recipient,
+      token: "USDC",
+      amount: request.amount,
+      label: request.label,
+      note: request.note,
+      invoiceDate: request.invoiceDate,
+      expiresAt: request.expiresAt,
+      dueAt: request.dueAt,
+      createdAt: request.createdAt,
+      destinationChainId: ARC_DESTINATION_CHAIN_ID,
+      allowedSourceChainIds: request.allowedSourceChainIds?.length
+        ? request.allowedSourceChainIds
+        : getAllowedSourceChainIds()
+    };
+    return encodeBase64UrlJson(payload);
+  }
+
   const payload: SharePayload = {
     version: 1,
     id: request.id,
@@ -234,13 +284,7 @@ export function encodeRequestPayload(request: PaymentRequest): string {
     createdAt: request.createdAt,
     startBlock: request.startBlock
   };
-  const json = JSON.stringify(payload);
-  const bytes = new TextEncoder().encode(json);
-  let binary = "";
-  for (const byte of bytes) {
-    binary += String.fromCharCode(byte);
-  }
-  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+  return encodeBase64UrlJson(payload);
 }
 
 export function decodeRequestPayload(encoded: string): PaymentRequest {
@@ -248,7 +292,11 @@ export function decodeRequestPayload(encoded: string): PaymentRequest {
   const padded = base64.padEnd(Math.ceil(base64.length / 4) * 4, "=");
   const binary = atob(padded);
   const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
-  const value = JSON.parse(new TextDecoder().decode(bytes)) as Partial<SharePayload>;
+  const value = JSON.parse(new TextDecoder().decode(bytes)) as Partial<SharePayload | CrossChainSharePayload>;
+
+  if (value.version === 2) {
+    return decodeCrossChainRequestPayload(value);
+  }
 
   if (value.version !== 1) {
     throw new Error("Unsupported request version.");
@@ -296,6 +344,18 @@ export function mergeScannedRequest(existing: PaymentRequest | undefined, scanne
   });
 }
 
+export function isCrossChainPaymentRequest(
+  request: Pick<PaymentRequest, "destinationChainId" | "allowedSourceChainIds"> | undefined
+): request is PaymentRequest & { destinationChainId: typeof ARC_DESTINATION_CHAIN_ID; allowedSourceChainIds: PaymentSourceChainId[] } {
+  return isArcSettlementPaymentRequest(request);
+}
+
+export function isArcSettlementPaymentRequest(
+  request: Pick<PaymentRequest, "destinationChainId" | "allowedSourceChainIds"> | undefined
+): request is PaymentRequest & { destinationChainId: typeof ARC_DESTINATION_CHAIN_ID; allowedSourceChainIds: PaymentSourceChainId[] } {
+  return request?.destinationChainId === ARC_DESTINATION_CHAIN_ID && Array.isArray(request.allowedSourceChainIds);
+}
+
 export function buildShareUrl(request: PaymentRequest, origin: string): string {
   return `${origin}/pay?r=${encodeRequestPayload(request)}`;
 }
@@ -334,6 +394,32 @@ export function makeReceipt(request: PaymentRequest, transfer: DecodedTransfer):
     blockNumber: transfer.blockNumber.toString(),
     confirmedAt: new Date().toISOString(),
     explorerUrl: toExplorerTxUrl(transfer.txHash)
+  };
+}
+
+export function makeCrossChainReceipt(input: {
+  request: PaymentRequest;
+  destinationTxHash: Hash;
+  payer: Address;
+  blockNumber: string;
+  confirmedAt?: string;
+  explorerUrl: string;
+  sourceChainId: PaymentSourceChainId;
+  sourceTxHash: Hash;
+}): Receipt {
+  return {
+    requestId: input.request.id,
+    txHash: input.destinationTxHash,
+    from: input.payer,
+    to: input.request.recipient,
+    token: input.request.token,
+    amount: input.request.amount,
+    blockNumber: input.blockNumber,
+    confirmedAt: input.confirmedAt ?? new Date().toISOString(),
+    explorerUrl: input.explorerUrl,
+    chainId: ARC_CHAIN_ID,
+    sourceChainId: input.sourceChainId,
+    sourceTxHash: input.sourceTxHash
   };
 }
 
@@ -390,10 +476,64 @@ function hasSameRequestPayload(left: PaymentRequest, right: PaymentRequest): boo
     optionalString(left.expiresAt) === optionalString(right.expiresAt) &&
     optionalString(left.dueAt) === optionalString(right.dueAt) &&
     left.createdAt === right.createdAt &&
-    left.startBlock === right.startBlock
+    left.startBlock === right.startBlock &&
+    optionalString(left.destinationChainId?.toString()) === optionalString(right.destinationChainId?.toString()) &&
+    JSON.stringify(left.allowedSourceChainIds ?? []) === JSON.stringify(right.allowedSourceChainIds ?? [])
   );
 }
 
 function optionalString(value: string | undefined): string {
   return value ?? "";
+}
+
+function decodeCrossChainRequestPayload(value: Partial<SharePayload | CrossChainSharePayload>): PaymentRequest {
+  if (
+    !value.id ||
+    !value.recipient ||
+    !value.token ||
+    !value.amount ||
+    !value.label ||
+    !value.createdAt ||
+    !("destinationChainId" in value) ||
+    value.destinationChainId !== ARC_DESTINATION_CHAIN_ID ||
+    !Array.isArray(value.allowedSourceChainIds)
+  ) {
+    throw new Error("Arc-settlement payment request is incomplete.");
+  }
+
+  if (value.token !== "USDC") {
+    throw new Error("Arc-settlement QR payments currently support USDC routes only.");
+  }
+
+  const allowedSourceChainIds = value.allowedSourceChainIds.filter(isPaymentSourceChainId);
+  if (!allowedSourceChainIds.length) {
+    throw new Error("Arc-settlement payment request is missing source chains.");
+  }
+
+  return {
+    id: String(value.id),
+    recipient: validateRecipient(value.recipient),
+    token: "USDC",
+    amount: formatTokenAmount(parseTokenAmount(String(value.amount), "USDC"), "USDC"),
+    label: normalizeLabel(String(value.label)),
+    note: value.note ? normalizeNote(String(value.note)) : undefined,
+    invoiceDate: value.invoiceDate ? normalizeInvoiceDate(String(value.invoiceDate)) : undefined,
+    expiresAt: value.expiresAt ? normalizeDateTime(String(value.expiresAt), "expiry time") : undefined,
+    dueAt: value.dueAt ? normalizeDateTime(String(value.dueAt), "due time") : undefined,
+    createdAt: normalizeDateTime(String(value.createdAt), "creation time"),
+    startBlock: "0",
+    status: "open",
+    destinationChainId: ARC_DESTINATION_CHAIN_ID,
+    allowedSourceChainIds
+  };
+}
+
+function encodeBase64UrlJson(value: unknown): string {
+  const json = JSON.stringify(value);
+  const bytes = new TextEncoder().encode(json);
+  let binary = "";
+  for (const byte of bytes) {
+    binary += String.fromCharCode(byte);
+  }
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
 }

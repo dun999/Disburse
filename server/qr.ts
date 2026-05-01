@@ -1,9 +1,16 @@
 import { randomUUID } from "node:crypto";
 import type { Hash, Log, TransactionReceipt } from "viem";
-import { publicClient, TOKENS } from "../src/lib/arc.js";
+import { ARC_CHAIN_ID, publicClient, TOKENS } from "../src/lib/arc.js";
+import {
+  ARC_DESTINATION_CHAIN_ID,
+  getAllowedSourceChainIds,
+  isPaymentSourceChainId,
+  isRemotePaymentSourceChainId
+} from "../src/lib/crosschain.js";
 import {
   createExpiry,
   formatTokenAmount,
+  isCrossChainPaymentRequest,
   isPaymentPayable,
   makeReceipt,
   normalizeDateTime,
@@ -31,6 +38,12 @@ import {
   type QrRealtimeEvent,
   type QrStatusPayload
 } from "../src/lib/realtime.js";
+import {
+  readCreateCrossChainInput,
+  relayCrossChainSettlement,
+  resolveCrossChainSourcePayment,
+  type CrossChainSourcePayment
+} from "./crosschain.js";
 import { HttpError } from "./http.js";
 import { getSupabaseAdmin } from "./supabase.js";
 
@@ -53,7 +66,7 @@ type SubmittedReceipt = {
 };
 
 export async function createStoredQrRequest(input: Record<string, unknown>): Promise<QrStatusPayload> {
-  const request = await buildServerQrRequest(readCreateQrRequestInput(input));
+  const request = await buildServerArcSettlementQrRequest(readCreateQrRequestInput(input));
   const supabase = getSupabaseAdmin();
   const { error } = await supabase.from("payment_requests").insert(paymentRequestToRow(request));
 
@@ -77,7 +90,8 @@ export async function readStoredQrStatus(requestId: string): Promise<QrStatusPay
 export async function recordStoredQrSubmission(
   requestId: string,
   txHash: Hash,
-  submittedAtInput?: string
+  submittedAtInput?: string,
+  sourceChainIdInput?: unknown
 ): Promise<QrStatusPayload> {
   const request = await readPaymentRequest(requestId);
   if (request.status === "paid" || request.status === "failed") {
@@ -90,7 +104,15 @@ export async function recordStoredQrSubmission(
     ...request,
     submittedAt,
     txHash,
-    status: "open"
+    status: "open",
+    settlement: isCrossChainPaymentRequest(request)
+      ? {
+          destinationChainId: ARC_DESTINATION_CHAIN_ID,
+          sourceChainId: isPaymentSourceChainId(sourceChainIdInput) ? sourceChainIdInput : undefined,
+          sourceTxHash: txHash,
+          stage: "submitted"
+        }
+      : request.settlement
   };
 
   if (!isPaymentPayable(submittedRequest)) {
@@ -102,9 +124,12 @@ export async function recordStoredQrSubmission(
     request_id: submittedRequest.id,
     event_type: "submitted",
     status: submittedRequest.status,
-    message: "Payment submitted. Waiting for on-chain confirmation.",
+    message: isCrossChainPaymentRequest(submittedRequest) && submittedRequest.settlement?.sourceChainId !== ARC_CHAIN_ID
+      ? "Source-chain payment submitted. Waiting for Polymer proof."
+      : "Payment submitted. Waiting for on-chain confirmation.",
     tx_hash: txHash,
-    submitted_at: submittedAt
+    submitted_at: submittedAt,
+    settlement: submittedRequest.settlement
   });
 
   return {
@@ -113,20 +138,30 @@ export async function recordStoredQrSubmission(
       request_id: submittedRequest.id,
       event_type: "submitted",
       status: submittedRequest.status,
-      message: "Payment submitted. Waiting for on-chain confirmation.",
+      message: isCrossChainPaymentRequest(submittedRequest) && submittedRequest.settlement?.sourceChainId !== ARC_CHAIN_ID
+        ? "Source-chain payment submitted. Waiting for Polymer proof."
+        : "Payment submitted. Waiting for on-chain confirmation.",
       tx_hash: txHash,
-      submitted_at: submittedAt
+      submitted_at: submittedAt,
+      settlement: submittedRequest.settlement
     }
   };
 }
 
-export async function confirmStoredQrPayment(requestId: string, txHash: Hash) {
+export async function confirmStoredQrPayment(requestId: string, txHash: Hash, sourceChainIdInput?: unknown) {
   const existingRequest = await readPaymentRequest(requestId);
   const request: PaymentRequest = {
     ...existingRequest,
     txHash,
     submittedAt: existingRequest.submittedAt ?? new Date().toISOString()
   };
+
+  const sourceChainId = isPaymentSourceChainId(sourceChainIdInput)
+    ? sourceChainIdInput
+    : request.settlement?.sourceChainId;
+  if (isCrossChainPaymentRequest(request) && isRemotePaymentSourceChainId(sourceChainId)) {
+    return confirmStoredCrossChainQrPayment(request, txHash, sourceChainIdInput);
+  }
 
   if (request.status === "paid" || request.status === "failed") {
     const receipt = await readPaymentReceipt(request.id);
@@ -148,13 +183,33 @@ export async function confirmStoredQrPayment(requestId: string, txHash: Hash) {
   const resolution = resolveSubmittedReceiptConfirmation(request, transactionReceipt);
 
   if (resolution.status === "paid") {
+    const settlement: PaymentRequest["settlement"] = isCrossChainPaymentRequest(request)
+      ? {
+          ...request.settlement,
+          destinationChainId: ARC_DESTINATION_CHAIN_ID,
+          sourceChainId: ARC_DESTINATION_CHAIN_ID,
+          sourceTxHash: resolution.receipt.txHash,
+          destinationTxHash: resolution.receipt.txHash,
+          destinationBlockNumber: resolution.receipt.blockNumber,
+          stage: "settled" as const
+        }
+      : request.settlement;
     const paidRequest: PaymentRequest = {
       ...request,
       status: "paid",
-      txHash: resolution.receipt.txHash
+      txHash: resolution.receipt.txHash,
+      settlement
     };
+    const receipt: Receipt = isCrossChainPaymentRequest(request)
+      ? {
+          ...resolution.receipt,
+          chainId: ARC_CHAIN_ID,
+          sourceChainId: ARC_DESTINATION_CHAIN_ID,
+          sourceTxHash: resolution.receipt.txHash
+        }
+      : resolution.receipt;
     await updatePaymentRequest(paidRequest);
-    await upsertPaymentReceipt(resolution.receipt);
+    await upsertPaymentReceipt(receipt);
     await insertQrEvent({
       request_id: paidRequest.id,
       event_type: "paid",
@@ -162,19 +217,30 @@ export async function confirmStoredQrPayment(requestId: string, txHash: Hash) {
       message: resolution.message,
       tx_hash: paidRequest.txHash,
       submitted_at: paidRequest.submittedAt,
-      receipt: resolution.receipt
+      receipt,
+      settlement
     });
     return {
       status: "paid" as const,
       request: paidRequest,
-      receipt: resolution.receipt,
+      receipt,
       message: resolution.message
     };
   }
 
   const failedRequest: PaymentRequest = {
     ...request,
-    status: "failed"
+    status: "failed",
+    settlement: isCrossChainPaymentRequest(request)
+      ? {
+          ...request.settlement,
+          destinationChainId: ARC_DESTINATION_CHAIN_ID,
+          sourceChainId: ARC_DESTINATION_CHAIN_ID,
+          sourceTxHash: txHash,
+          stage: "failed",
+          failureReason: resolution.message
+        }
+      : request.settlement
   };
   await updatePaymentRequest(failedRequest, resolution.message);
   await insertQrEvent({
@@ -183,7 +249,8 @@ export async function confirmStoredQrPayment(requestId: string, txHash: Hash) {
     status: "failed",
     message: resolution.message,
     tx_hash: failedRequest.txHash,
-    submitted_at: failedRequest.submittedAt
+    submitted_at: failedRequest.submittedAt,
+    settlement: failedRequest.settlement
   });
 
   return {
@@ -246,28 +313,189 @@ export function readRequestId(value: unknown): string {
   return value;
 }
 
-async function buildServerQrRequest(input: CreateQrRequestInput): Promise<PaymentRequest> {
+async function buildServerArcSettlementQrRequest(input: CreateQrRequestInput): Promise<PaymentRequest> {
+  if (input.token !== "USDC") {
+    throw new HttpError(400, "QR payments currently support USDC only.");
+  }
   const createdAt = new Date().toISOString();
-  const blockNumber = await publicClient.getBlockNumber();
+  const crossChainInput = readCreateCrossChainInput({});
+
   return {
     id: randomUUID(),
     recipient: validateRecipient(input.recipient),
-    token: input.token,
-    amount: formatTokenAmount(parseTokenAmount(input.amount, input.token), input.token),
+    token: "USDC",
+    amount: formatTokenAmount(parseTokenAmount(input.amount, "USDC"), "USDC"),
     label: normalizeLabel(input.label),
     note: input.note ? normalizeNote(input.note) : undefined,
     invoiceDate: normalizeInvoiceDate(input.invoiceDate),
     expiresAt: createExpiry(createdAt),
     createdAt,
-    startBlock: blockNumber.toString(),
-    status: "open"
+    startBlock: "0",
+    status: "open",
+    destinationChainId: crossChainInput.destinationChainId,
+    allowedSourceChainIds: crossChainInput.allowedSourceChainIds,
+    settlement: {
+      destinationChainId: crossChainInput.destinationChainId
+    }
   };
 }
 
-function readCreateQrRequestInput(input: Record<string, unknown>): CreateQrRequestInput {
+async function confirmStoredCrossChainQrPayment(
+  request: PaymentRequest & { destinationChainId: typeof ARC_DESTINATION_CHAIN_ID },
+  txHash: Hash,
+  sourceChainIdInput?: unknown
+) {
+  if (request.status === "paid" || request.status === "failed") {
+    const receipt = await readPaymentReceipt(request.id);
+    return {
+      status: request.status,
+      request,
+      ...(receipt ? { receipt } : {}),
+      message: request.status === "paid" ? "Payment already settled on Arc." : "Arc settlement already failed."
+    };
+  }
+
+  let sourcePayment: CrossChainSourcePayment;
+  try {
+    await updatePaymentRequest({
+      ...request,
+      settlement: {
+        ...request.settlement,
+        destinationChainId: ARC_DESTINATION_CHAIN_ID,
+        sourceChainId: isPaymentSourceChainId(sourceChainIdInput) ? sourceChainIdInput : request.settlement?.sourceChainId,
+        sourceTxHash: txHash,
+        stage: "proving"
+      }
+    });
+    await insertQrEvent({
+      request_id: request.id,
+      event_type: "proving",
+      status: "open",
+      message: "Source payment confirmed. Requesting Polymer proof.",
+      tx_hash: txHash,
+      submitted_at: request.submittedAt,
+      settlement: {
+        ...request.settlement,
+        destinationChainId: ARC_DESTINATION_CHAIN_ID,
+        sourceChainId: isPaymentSourceChainId(sourceChainIdInput) ? sourceChainIdInput : request.settlement?.sourceChainId,
+        sourceTxHash: txHash,
+        stage: "proving"
+      }
+    });
+
+    sourcePayment = await resolveCrossChainSourcePayment(
+      request,
+      txHash,
+      sourceChainIdInput ?? request.settlement?.sourceChainId
+    );
+  } catch (error) {
+    return failCrossChainRequest(request, txHash, errorToFailureMessage(error));
+  }
+
+  try {
+    const provingRequest: PaymentRequest = {
+      ...request,
+      settlement: {
+        destinationChainId: ARC_DESTINATION_CHAIN_ID,
+        sourceChainId: sourcePayment.sourceChainId,
+        sourceTxHash: sourcePayment.sourceTxHash,
+        sourceBlockNumber: sourcePayment.sourceBlockNumber,
+        sourceLogIndex: sourcePayment.sourceLogIndex,
+        stage: "settling"
+      }
+    };
+    await updatePaymentRequest(provingRequest);
+    await insertQrEvent({
+      request_id: request.id,
+      event_type: "settling",
+      status: "open",
+      message: "Polymer proof requested. Relaying settlement transaction.",
+      tx_hash: sourcePayment.sourceTxHash,
+      submitted_at: request.submittedAt,
+      settlement: provingRequest.settlement
+    });
+
+    const result = await relayCrossChainSettlement(provingRequest, sourcePayment);
+    const paidRequest: PaymentRequest = {
+      ...provingRequest,
+      status: "paid",
+      txHash: result.receipt.txHash,
+      settlement: result.settlement
+    };
+    await updatePaymentRequest(paidRequest);
+    await upsertPaymentReceipt(result.receipt);
+    await insertQrEvent({
+      request_id: paidRequest.id,
+      event_type: "paid",
+      status: "paid",
+      message: "Payment settled on Arc. Invoice is ready.",
+      tx_hash: result.receipt.txHash,
+      submitted_at: paidRequest.submittedAt,
+      receipt: result.receipt,
+      settlement: result.settlement
+    });
+    return {
+      status: "paid" as const,
+      request: paidRequest,
+      receipt: result.receipt,
+      message: "Payment settled on Arc. Invoice is ready."
+    };
+  } catch (error) {
+    return failCrossChainRequest(
+      {
+        ...request,
+        settlement: {
+          destinationChainId: ARC_DESTINATION_CHAIN_ID,
+          sourceChainId: sourcePayment.sourceChainId,
+          sourceTxHash: sourcePayment.sourceTxHash,
+          sourceBlockNumber: sourcePayment.sourceBlockNumber,
+          sourceLogIndex: sourcePayment.sourceLogIndex,
+          stage: "settling"
+        }
+      },
+      txHash,
+      errorToFailureMessage(error)
+    );
+  }
+}
+
+async function failCrossChainRequest(request: PaymentRequest, txHash: Hash, message: string) {
+  const failedRequest: PaymentRequest = {
+    ...request,
+    status: "failed",
+    txHash,
+    settlement: request.destinationChainId
+      ? {
+          ...request.settlement,
+          destinationChainId: ARC_DESTINATION_CHAIN_ID,
+          sourceTxHash: request.settlement?.sourceTxHash ?? txHash,
+          stage: "failed",
+          failureReason: message
+        }
+      : request.settlement
+  };
+  await updatePaymentRequest(failedRequest, message);
+  await insertQrEvent({
+    request_id: failedRequest.id,
+    event_type: "failed",
+    status: "failed",
+    message,
+    tx_hash: txHash,
+    submitted_at: failedRequest.submittedAt,
+    settlement: failedRequest.settlement
+  });
+
+  return {
+    status: "failed" as const,
+    request: failedRequest,
+    message
+  };
+}
+
+export function readCreateQrRequestInput(input: Record<string, unknown>): CreateQrRequestInput {
   const token = input.token;
-  if (token !== "USDC" && token !== "EURC") {
-    throw new HttpError(400, "Unsupported payment token.");
+  if (token !== "USDC") {
+    throw new HttpError(400, "QR payments currently support USDC only.");
   }
   return {
     recipient: readRequiredString(input, "recipient"),
@@ -355,7 +583,8 @@ async function insertQrEvent(event: Omit<QrRealtimeEvent, "id" | "created_at">) 
     message: event.message,
     tx_hash: event.tx_hash ?? null,
     submitted_at: event.submitted_at ?? null,
-    receipt: event.receipt ?? null
+    receipt: event.receipt ?? null,
+    settlement: event.settlement ?? null
   });
 
   if (error) {
@@ -369,4 +598,11 @@ function readRequiredString(input: Record<string, unknown>, key: string): string
     throw new HttpError(400, `Missing ${key}.`);
   }
   return value;
+}
+
+function errorToFailureMessage(error: unknown): string {
+  if (error instanceof HttpError || error instanceof Error) {
+    return error.message;
+  }
+  return "Arc settlement failed.";
 }

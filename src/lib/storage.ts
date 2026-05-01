@@ -1,7 +1,15 @@
 import type { PaymentRequest, PaymentStatus, Receipt } from "./payments";
 import {
+  ARC_DESTINATION_CHAIN_ID,
+  getAllowedSourceChainIds,
+  getCrossChainExplorerTxUrl,
+  isPaymentSourceChainId,
+  type PaymentSourceChainId
+} from "./crosschain";
+import {
   formatTokenAmount,
   isPaymentToken,
+  isCrossChainPaymentRequest,
   normalizeDateTime,
   normalizeInvoiceDate,
   normalizeLabel,
@@ -97,7 +105,9 @@ function normalizeImportedRequest(value: unknown): PaymentRequest | undefined {
     if (!isPaymentToken(token)) {
       return undefined;
     }
-    const startBlock = BigInt(readRequiredString(value, "startBlock"));
+    const startBlock = BigInt(
+      typeof value.startBlock === "string" && value.startBlock.trim() ? value.startBlock : value.destinationChainId ? "0" : ""
+    );
     if (startBlock < 0n) {
       return undefined;
     }
@@ -124,8 +134,20 @@ function normalizeImportedRequest(value: unknown): PaymentRequest | undefined {
         : undefined,
       startBlock: String(startBlock),
       status: readPaymentStatus(value.status),
-      txHash: readHash(value.txHash)
+      txHash: readHash(value.txHash),
+      destinationChainId: readDestinationChainId(value.destinationChainId),
+      allowedSourceChainIds: readCrossChainIdArray(value.allowedSourceChainIds),
+      settlement: readSettlementState(value)
     };
+
+    if (isCrossChainPaymentRequest(request)) {
+      if (request.token !== "USDC") {
+        return undefined;
+      }
+      request.allowedSourceChainIds = request.allowedSourceChainIds?.length
+        ? request.allowedSourceChainIds
+        : getAllowedSourceChainIds();
+    }
 
     return refreshDerivedStatus(request);
   } catch {
@@ -158,7 +180,10 @@ function normalizeImportedReceipt(value: unknown): Receipt | undefined {
       amount: formatTokenAmount(parseTokenAmount(readRequiredString(value, "amount"), token), token),
       blockNumber: String(blockNumber),
       confirmedAt: normalizeDateTime(readRequiredString(value, "confirmedAt"), "confirmation time"),
-      explorerUrl: toExplorerTxUrl(txHash)
+      explorerUrl: getImportedReceiptExplorerUrl(txHash, value.chainId),
+      chainId: typeof value.chainId === "number" ? value.chainId : undefined,
+      sourceChainId: readCrossChainId(value.sourceChainId),
+      sourceTxHash: readHash(value.sourceTxHash)
     };
   } catch {
     return undefined;
@@ -174,6 +199,53 @@ function readHash(value: unknown): `0x${string}` | undefined {
     return undefined;
   }
   return value as `0x${string}`;
+}
+
+function readCrossChainId(value: unknown): PaymentSourceChainId | undefined {
+  return isPaymentSourceChainId(value) ? value : undefined;
+}
+
+function readDestinationChainId(value: unknown): typeof ARC_DESTINATION_CHAIN_ID | undefined {
+  return value === ARC_DESTINATION_CHAIN_ID ? ARC_DESTINATION_CHAIN_ID : undefined;
+}
+
+function readCrossChainIdArray(value: unknown): PaymentSourceChainId[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  const chainIds = value.filter(isPaymentSourceChainId);
+  return chainIds.length ? chainIds : undefined;
+}
+
+function readSettlementState(value: Record<string, unknown>): PaymentRequest["settlement"] {
+  if (!isRecord(value.settlement)) {
+    return undefined;
+  }
+  const settlement = value.settlement;
+  const destinationChainId = readCrossChainId(settlement.destinationChainId);
+  if (destinationChainId !== ARC_DESTINATION_CHAIN_ID) {
+    return undefined;
+  }
+  const stage = settlement.stage;
+  return {
+    destinationChainId,
+    sourceChainId: readCrossChainId(settlement.sourceChainId),
+    sourceTxHash: readHash(settlement.sourceTxHash),
+    sourceBlockNumber: readOptionalString(settlement, "sourceBlockNumber"),
+    sourceLogIndex: typeof settlement.sourceLogIndex === "number" ? settlement.sourceLogIndex : undefined,
+    proofJobId: readOptionalString(settlement, "proofJobId"),
+    destinationTxHash: readHash(settlement.destinationTxHash),
+    destinationBlockNumber: readOptionalString(settlement, "destinationBlockNumber"),
+    stage:
+      stage === "submitted" || stage === "proving" || stage === "settling" || stage === "settled" || stage === "failed"
+        ? stage
+        : undefined,
+    failureReason: readOptionalString(settlement, "failureReason")
+  };
+}
+
+function getImportedReceiptExplorerUrl(txHash: `0x${string}`, chainId: unknown): string {
+  return isPaymentSourceChainId(chainId) ? getCrossChainExplorerTxUrl(chainId, txHash) : toExplorerTxUrl(txHash);
 }
 
 function readRequiredString(record: Record<string, unknown>, key: string): string {

@@ -11,7 +11,8 @@ export default async function handler(request: ApiRequest, response: ApiResponse
       await recordStoredQrSubmission(
         readRequestId(body.id),
         readHash(body.txHash),
-        typeof body.submittedAt === "string" ? body.submittedAt : undefined
+        typeof body.submittedAt === "string" ? body.submittedAt : undefined,
+        body.sourceChainId
       )
     );
   } catch (error) {

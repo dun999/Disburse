@@ -2,7 +2,7 @@ import { encodeAbiParameters, encodeEventTopics, type Log } from "viem";
 import { describe, expect, it } from "vitest";
 import { erc20Abi, TOKENS } from "../src/lib/arc.js";
 import { parseTokenAmount, type PaymentRequest } from "../src/lib/payments.js";
-import { resolveSubmittedReceiptConfirmation } from "./qr.js";
+import { readCreateQrRequestInput, resolveSubmittedReceiptConfirmation } from "./qr.js";
 
 const recipient = "0x1111111111111111111111111111111111111111";
 const sender = "0x2222222222222222222222222222222222222222";
@@ -21,6 +21,18 @@ const request: PaymentRequest = {
 };
 
 describe("server QR confirmation mapping", () => {
+  it("rejects non-USDC QR creation inputs", () => {
+    expect(() =>
+      readCreateQrRequestInput({
+        recipient,
+        token: "EURC",
+        amount: "12.34",
+        label: "Invoice 7421",
+        invoiceDate: "2026-04-30"
+      })
+    ).toThrow("USDC only");
+  });
+
   it("maps an exact ERC-20 transfer receipt to paid", () => {
     const result = resolveSubmittedReceiptConfirmation(request, {
       status: "success",

@@ -1,0 +1,70 @@
+{
+  "deployedAt": "2026-05-01T00:19:19.987Z",
+  "deployer": "0x6D183A6c0c37A13B3Db5C159795cC10F23b2E75D",
+  "prover": "0x03Fb5bFA4EB2Cba072A477A372bB87880A60fC96",
+  "contracts": {
+    "arcSettlement": {
+      "chainId": 5042002,
+      "address": "0x8c535227ed2b2963a3c1176510bc59e7a7fef07d",
+      "txHash": "0x80506429e31d51ae7146fdeb8a8990527a8514b6ba3b3846844640b2b4703343",
+      "explorerUrl": "https://testnet.arcscan.app/tx/0x80506429e31d51ae7146fdeb8a8990527a8514b6ba3b3846844640b2b4703343"
+    },
+    "baseSource": {
+      "chainId": 84532,
+      "address": "0x8c535227ed2b2963a3c1176510bc59e7a7fef07d",
+      "txHash": "0xb8ee2f4bfaeedd286964579c2d100e83a618bcec60b708be499267994caed5e8",
+      "explorerUrl": "https://sepolia-explorer.base.org/tx/0xb8ee2f4bfaeedd286964579c2d100e83a618bcec60b708be499267994caed5e8"
+    },
+    "megaSource": {
+      "chainId": 6343,
+      "address": "0x8c535227ed2b2963a3c1176510bc59e7a7fef07d",
+      "txHash": "0x2dc72b676f5d14b33b4d029f483b9d5b34e67eb7e9f9f2fd5febc43c90e66dbf",
+      "explorerUrl": "https://megaeth-testnet-v2.blockscout.com/tx/0x2dc72b676f5d14b33b4d029f483b9d5b34e67eb7e9f9f2fd5febc43c90e66dbf"
+    }
+  },
+  "tokens": {
+    "arcUsdc": "0x3600000000000000000000000000000000000000",
+    "baseSourceToken": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+    "megaSourceToken": "0xd4db9b3dc633f7b1403f4ba2281aa1aca43296d8"
+  },
+  "configured": true,
+  "configuration": {
+    "allowedSources": {
+      "baseSepolia": {
+        "chainId": 84532,
+        "sourceContract": "0x8c535227ed2b2963a3c1176510bc59e7a7fef07d",
+        "txHash": "0x1e91c349caece5a17e7f164188fe2edfbbcce7ce66c2245be7a04c32b1559a0c",
+        "explorerUrl": "https://testnet.arcscan.app/tx/0x1e91c349caece5a17e7f164188fe2edfbbcce7ce66c2245be7a04c32b1559a0c"
+      },
+      "megaEth": {
+        "chainId": 6343,
+        "sourceContract": "0x8c535227ed2b2963a3c1176510bc59e7a7fef07d",
+        "txHash": "0x2f2ea7a88b98b4f2addea92f90b905a9c87b286c162d8b12d8a60a21cfb301f4",
+        "explorerUrl": "https://testnet.arcscan.app/tx/0x2f2ea7a88b98b4f2addea92f90b905a9c87b286c162d8b12d8a60a21cfb301f4"
+      }
+    },
+    "tokenRoutes": {
+      "baseSepolia": {
+        "chainId": 84532,
+        "sourceToken": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+        "destinationToken": "0x3600000000000000000000000000000000000000",
+        "txHash": "0x23c30dac8c4d3aa470daed2d499a87437d3888d19a0403f668b5a449534f4cac",
+        "explorerUrl": "https://testnet.arcscan.app/tx/0x23c30dac8c4d3aa470daed2d499a87437d3888d19a0403f668b5a449534f4cac"
+      },
+      "megaEth": {
+        "chainId": 6343,
+        "sourceToken": "0xd4db9b3dc633f7b1403f4ba2281aa1aca43296d8",
+        "destinationToken": "0x3600000000000000000000000000000000000000",
+        "txHash": "0xff45a83ed1cb7b1e759703a47354e6a0f6246580884aa67439cf955db6d36827",
+        "explorerUrl": "https://testnet.arcscan.app/tx/0xff45a83ed1cb7b1e759703a47354e6a0f6246580884aa67439cf955db6d36827"
+      }
+    },
+    "liquidity": {
+      "token": "0x3600000000000000000000000000000000000000",
+      "amount": "10",
+      "amountBaseUnits": "10000000",
+      "txHash": "0xc91d89705f0921f23bdc407dc3c5af9b59f465a7413933277489fd9d63953db6",
+      "explorerUrl": "https://testnet.arcscan.app/tx/0xc91d89705f0921f23bdc407dc3c5af9b59f465a7413933277489fd9d63953db6"
+    }
+  }
+}

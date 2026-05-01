@@ -695,12 +695,14 @@ textarea::placeholder {
 
 .wallet-table,
 .estimate-line,
+.route-summary,
 .support-grid {
   display: grid;
 }
 
 .wallet-table,
-.estimate-line {
+.estimate-line,
+.route-summary {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   margin: 16px 0;
   border-top: 1px solid var(--line);
@@ -712,7 +714,8 @@ textarea::placeholder {
 }
 
 .wallet-table .metric,
-.estimate-line .metric {
+.estimate-line .metric,
+.route-summary .metric {
   padding: 12px;
   border-right: 1px solid var(--line);
   border-bottom: 1px solid var(--line);
@@ -956,7 +959,7 @@ code {
   gap: 6px;
 }
 
-.mode-callout {
+.request-callout {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 12px;
@@ -966,7 +969,7 @@ code {
   border-top: 1px solid var(--line);
 }
 
-.mode-callout strong {
+.request-callout strong {
   font-size: 0.95rem;
 }
 
@@ -1861,10 +1864,11 @@ code {
   .field-grid,
   .wallet-table,
   .estimate-line,
+  .route-summary,
   .expiry-grid,
   .token-line,
   .qr-share,
-  .mode-callout,
+  .request-callout,
   .recovery-panel,
   .process-item,
   .ledger-row,

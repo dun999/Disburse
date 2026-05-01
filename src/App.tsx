@@ -1,5 +1,5 @@
 import { type FormEvent, type MouseEvent, type ReactNode, type RefObject, useEffect, useMemo, useRef, useState } from "react";
-import { formatUnits, type Hash } from "viem";
+import { formatUnits, parseUnits, type Hash } from "viem";
 import {
   ARC_CHAIN_ID,
   ARC_DOCS_URL,
@@ -7,11 +7,25 @@ import {
   ARC_FAUCET_URL,
   ARC_RPC_ENDPOINTS,
   ARC_RPC_URL,
-  TOKENS,
-  publicClient
+  TOKENS
 } from "./lib/arc";
 import { errorToMessage } from "./lib/errors";
 import { buildInvoiceFilename, formatInvoiceDate, generateInvoicePdf } from "./lib/invoice";
+import {
+  ARC_DESTINATION_CHAIN_ID,
+  getAllowedSourceChainIds,
+  getCrossChainExplorerTxUrl,
+  getCrossChainLabel,
+  isRemotePaymentSourceChainId,
+  type PaymentSourceChainId
+} from "./lib/crosschain";
+import {
+  estimateCrossChainPayment,
+  readCrossChainBalances,
+  submitCrossChainPayment,
+  switchToCrossChain,
+  waitForCrossChainReceipt
+} from "./lib/crosschainOnchain";
 import {
   checkArcRpc,
   connectWallet,
@@ -36,6 +50,7 @@ import {
   createExpiry,
   decodeRequestPayload,
   formatTokenAmount,
+  isCrossChainPaymentRequest,
   isPaymentExpired,
   isPaymentPayable,
   mergeScannedRequest,
@@ -96,7 +111,16 @@ type Notice = {
 type RpcHealth = Awaited<ReturnType<typeof checkArcRpc>>;
 type Theme = "light" | "dark";
 type Page = "payments" | "qr-payments" | "pay" | "docs";
-type PayLifecycle = "idle" | "preparing" | "awaiting_wallet" | "submitted" | "confirming" | "verified" | "failed";
+type PayLifecycle =
+  | "idle"
+  | "preparing"
+  | "awaiting_wallet"
+  | "submitted"
+  | "confirming"
+  | "proving"
+  | "settling"
+  | "verified"
+  | "failed";
 type NavigateHandler = (event: MouseEvent<HTMLAnchorElement>, target: string) => void;
 type DocsSection = {
   title: string;
@@ -377,6 +401,7 @@ function App() {
   const [receipts, setReceipts] = useState<Receipt[]>(() => loadReceipts());
   const [selectedId, setSelectedId] = useState<string | undefined>(() => loadRequests()[0]?.id);
   const [payRequestId, setPayRequestId] = useState<string | undefined>();
+  const [paySourceChainId, setPaySourceChainId] = useState<PaymentSourceChainId>(ARC_CHAIN_ID);
   const [shareUrl, setShareUrl] = useState("");
   const [qrDataUrl, setQrDataUrl] = useState("");
   const [directNotice, setDirectNotice] = useState<Notice | undefined>();
@@ -423,6 +448,8 @@ function App() {
   );
 
   const wrongChain = Boolean(account && chainId !== undefined && chainId !== ARC_CHAIN_ID);
+  const payRequiredChainId = isCrossChainPaymentRequest(payRequest) ? paySourceChainId : ARC_CHAIN_ID;
+  const payWrongChain = Boolean(account && chainId !== undefined && chainId !== payRequiredChainId);
   const hasWalletProvider = Boolean(getInjectedProvider());
   const payDisplayStatus = payRequest ? refreshDerivedStatus(payRequest, now).status : "open";
   const payIsExpired = payRequest ? isPaymentExpired(payRequest, now) : false;
@@ -430,7 +457,9 @@ function App() {
   const directInsufficientToken = useInsufficientToken(directBalances, directForm);
   const payInsufficientToken = useInsufficientToken(payBalances, payRequest);
   const directMissingGas = hasInsufficientGas(directBalances, directForm, directEstimate);
-  const payMissingGas = hasInsufficientGas(payBalances, payRequest, payEstimate);
+  const payMissingGas = usesRemoteSource(payRequest, paySourceChainId)
+    ? hasInsufficientNativeGas(payBalances, payEstimate)
+    : hasInsufficientGas(payBalances, payRequest, payEstimate);
   const rpcIsStale = Boolean(rpcHealth && Date.now() - new Date(rpcHealth.checkedAt).getTime() > 18_000);
   const rpcStatusLabel = !rpcHealth
     ? "checking"
@@ -628,6 +657,9 @@ function App() {
         upsertRequest(current, mergeScannedRequest(current.find((request) => request.id === decoded.id), decoded))
       );
       setPayRequestId(decoded.id);
+      if (isCrossChainPaymentRequest(decoded)) {
+        setPaySourceChainId(chooseDefaultPaymentSource(decoded));
+      }
       setPayBalances(undefined);
       setPayEstimate(undefined);
       setPayLifecycle("idle");
@@ -706,16 +738,22 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (!account || wrongChain) {
+    if (!account) {
       return;
     }
     if (page === "payments" && hasTransferInput(directForm)) {
+      if (wrongChain) {
+        return;
+      }
       void refreshDirectBalances();
     }
     if (page === "pay" && payRequest) {
+      if (payWrongChain) {
+        return;
+      }
       void refreshPayBalances(payRequest);
     }
-  }, [account, wrongChain, page, payRequest?.id, payRequest?.token, payRequest?.amount]);
+  }, [account, wrongChain, payWrongChain, page, payRequest?.id, payRequest?.token, payRequest?.amount, paySourceChainId]);
 
   async function handleConnectWallet() {
     const provider = getInjectedProvider();
@@ -761,6 +799,36 @@ function App() {
       const nextChainId = await getWalletChainId(provider);
       setChainId(nextChainId);
       setWalletNotice({ tone: "success", text: "Arc Testnet selected." });
+    } catch (error) {
+      setWalletNotice({ tone: "error", text: errorToMessage(error) });
+    } finally {
+      setIsConnecting(false);
+    }
+  }
+
+  async function handleSwitchPayNetwork() {
+    if (!usesRemoteSource(payRequest, paySourceChainId)) {
+      await handleSwitchNetwork();
+      return;
+    }
+
+    const provider = getInjectedProvider();
+    if (!provider) {
+      setWalletNotice({
+        tone: "error",
+        text: "No injected wallet found. Open this page in a wallet browser or install a supported desktop wallet."
+      });
+      return;
+    }
+
+    setIsConnecting(true);
+    setWalletNotice(undefined);
+
+    try {
+      await switchToCrossChain(provider, paySourceChainId);
+      const nextChainId = await getWalletChainId(provider);
+      setChainId(nextChainId);
+      setWalletNotice({ tone: "success", text: `${getCrossChainLabel(paySourceChainId)} selected.` });
     } catch (error) {
       setWalletNotice({ tone: "error", text: errorToMessage(error) });
     } finally {
@@ -858,7 +926,7 @@ function App() {
       setQrForm((current) => ({
         ...emptyQrForm,
         recipient: current.recipient,
-        token: current.token,
+        token: "USDC",
         invoiceDate: current.invoiceDate
       }));
     } catch (error) {
@@ -874,8 +942,13 @@ function App() {
       setPayNotice({ tone: "error", text: "Connect a wallet and load a QR request." });
       return;
     }
-    if (wrongChain) {
-      setPayNotice({ tone: "error", text: "Switch to Arc Testnet before estimating." });
+    if (payWrongChain) {
+      setPayNotice({
+        tone: "error",
+        text: usesRemoteSource(request, paySourceChainId)
+          ? `Switch to ${getCrossChainLabel(paySourceChainId)} before estimating.`
+          : "Switch to Arc Testnet before estimating."
+      });
       return;
     }
     if (!isPaymentPayable(request)) {
@@ -887,7 +960,9 @@ function App() {
     setPayNotice({ tone: "info", text: "Estimating QR payment." });
 
     try {
-      const nextEstimate = await estimatePayment(account, request);
+      const nextEstimate = usesRemoteSource(request, paySourceChainId)
+        ? await estimateCrossChainPayment(account, request, paySourceChainId)
+        : await estimatePayment(account, request);
       setPayEstimate(nextEstimate);
       await refreshPayBalances(request);
       setPayNotice({ tone: "success", text: "Estimate ready." });
@@ -905,8 +980,13 @@ function App() {
       setPayNotice({ tone: "error", text: "Connect a wallet and load a QR request." });
       return;
     }
-    if (wrongChain) {
-      setPayNotice({ tone: "error", text: "Switch to Arc Testnet before paying." });
+    if (payWrongChain) {
+      setPayNotice({
+        tone: "error",
+        text: usesRemoteSource(request, paySourceChainId)
+          ? `Switch to ${getCrossChainLabel(paySourceChainId)} before paying.`
+          : "Switch to Arc Testnet before paying."
+      });
       return;
     }
 
@@ -921,17 +1001,26 @@ function App() {
     setPayNotice({ tone: "info", text: "Preparing QR payment." });
 
     try {
-      const balances = await readBalances(account, request);
+      const isRemoteSource = usesRemoteSource(request, paySourceChainId);
+      const balances = isRemoteSource
+        ? await readCrossChainBalances(account, request, paySourceChainId)
+        : await readBalances(account, request);
       setPayBalances(balances);
       ensureTokenBalance(balances, request);
 
       let transferEstimate = payEstimate;
       if (!transferEstimate) {
         setPayNotice({ tone: "info", text: "Estimating QR payment." });
-        transferEstimate = await estimatePayment(account, request);
+        transferEstimate = isRemoteSource
+          ? await estimateCrossChainPayment(account, request, paySourceChainId)
+          : await estimatePayment(account, request);
         setPayEstimate(transferEstimate);
       }
-      ensureGasBalance(balances, request, transferEstimate);
+      if (isRemoteSource) {
+        ensureNativeGasBalance(balances, transferEstimate, getCrossChainLabel(paySourceChainId));
+      } else {
+        ensureGasBalance(balances, request, transferEstimate);
+      }
 
       const requestWithAttempt: PaymentRequest = {
         ...request,
@@ -940,13 +1029,25 @@ function App() {
       setPayLifecycle("awaiting_wallet");
       setPayNotice({ tone: "info", text: "Open your wallet and approve the payment." });
 
-      const hash = await submitPayment(provider, account, requestWithAttempt);
+      const hash = isRemoteSource
+        ? await submitCrossChainPayment(provider, account, requestWithAttempt, paySourceChainId)
+        : await submitPayment(provider, account, requestWithAttempt);
       setPayLifecycle("submitted");
-      setPayNotice({ tone: "info", text: "Transaction submitted. Verifying receipt." });
+      setPayNotice({
+        tone: "info",
+        text: isRemoteSource
+          ? "Source-chain payment submitted. Waiting for Polymer proof relay."
+          : "Transaction submitted. Verifying receipt."
+      });
 
       let requestWithHash: PaymentRequest = { ...requestWithAttempt, txHash: hash };
       try {
-        const submission = await recordRemoteQrSubmission(request.id, hash, requestWithAttempt.submittedAt);
+        const submission = await recordRemoteQrSubmission(
+          request.id,
+          hash,
+          requestWithAttempt.submittedAt,
+          isCrossChainPaymentRequest(request) ? paySourceChainId : undefined
+        );
         if (submission?.request) {
           requestWithHash = submission.request;
         }
@@ -957,14 +1058,27 @@ function App() {
 
       setPayLifecycle("confirming");
       try {
-        await waitForTransactionConfirmation(hash);
+        if (isRemoteSource) {
+          await waitForCrossChainReceipt(paySourceChainId, hash);
+        } else {
+          await waitForTransactionConfirmation(hash);
+        }
       } catch (error) {
         setPayLifecycle("submitted");
         setPayNotice({ tone: "info", text: errorToMessage(error) });
         return;
       }
 
-      const remoteConfirmation = await confirmRemoteQrPayment(request.id, hash).catch((error) => {
+      if (isRemoteSource) {
+        setPayLifecycle("proving");
+        setPayNotice({ tone: "info", text: "Source payment confirmed. Requesting Polymer proof." });
+      }
+
+      const remoteConfirmation = await confirmRemoteQrPayment(
+        request.id,
+        hash,
+        isCrossChainPaymentRequest(request) ? paySourceChainId : undefined
+      ).catch((error) => {
         setPayNotice({ tone: "info", text: errorToMessage(error) });
         return undefined;
       });
@@ -974,6 +1088,12 @@ function App() {
         setPayNotice({
           tone: remoteConfirmation.status === "paid" ? "success" : "error",
           text: remoteConfirmation.message ?? (remoteConfirmation.status === "paid" ? "Payment confirmed." : "Payment failed.")
+        });
+      } else if (isRemoteSource) {
+        setPayLifecycle("proving");
+        setPayNotice({
+          tone: "info",
+          text: "Source payment is confirmed, but the backend relay was unavailable. Use Verify after the API is available."
         });
       } else {
         const result = await verifyPayment(requestWithHash);
@@ -1014,18 +1134,42 @@ function App() {
 
     setIsVerifying(true);
     setPayLifecycle(request.txHash ? "confirming" : "preparing");
-    setPayNotice({ tone: "info", text: "Scanning Arc Testnet logs." });
+    setPayNotice({
+      tone: "info",
+      text: usesRemoteSource(request, request.settlement?.sourceChainId ?? paySourceChainId)
+        ? "Checking Polymer settlement status."
+        : "Scanning Arc Testnet logs."
+    });
 
     try {
-      const remoteConfirmation = request.txHash
-        ? await confirmRemoteQrPayment(request.id, request.txHash).catch(() => undefined)
+      const crossChainSourceHash = isCrossChainPaymentRequest(request)
+        ? request.settlement?.sourceTxHash ?? request.txHash
         : undefined;
+      const remoteConfirmation = isCrossChainPaymentRequest(request)
+        ? crossChainSourceHash
+          ? await confirmRemoteQrPayment(
+              request.id,
+              crossChainSourceHash,
+              request.settlement?.sourceChainId ?? paySourceChainId
+            ).catch(() => undefined)
+          : undefined
+        : request.txHash
+          ? await confirmRemoteQrPayment(request.id, request.txHash).catch(() => undefined)
+          : undefined;
       if (remoteConfirmation) {
         applyQrStatusPayload(remoteConfirmation, setRequests, setReceipts);
         setPayLifecycle(remoteConfirmation.status === "paid" ? "verified" : "failed");
         setPayNotice({
           tone: remoteConfirmation.status === "paid" ? "success" : "error",
           text: remoteConfirmation.message ?? (remoteConfirmation.status === "paid" ? "Payment confirmed." : "Payment failed.")
+        });
+      } else if (usesRemoteSource(request, request.settlement?.sourceChainId ?? paySourceChainId)) {
+        setPayLifecycle(crossChainSourceHash ? "proving" : "idle");
+        setPayNotice({
+          tone: crossChainSourceHash ? "info" : "error",
+          text: crossChainSourceHash
+            ? "Source payment is known, but the backend relayer did not return a settlement yet."
+            : "No source-chain transaction is saved for this Arc-settlement request."
         });
       } else {
         const result = await verifyPayment(request);
@@ -1096,7 +1240,11 @@ function App() {
       return;
     }
     try {
-      setPayBalances(await readBalances(account, request));
+      setPayBalances(
+        usesRemoteSource(request, paySourceChainId)
+          ? await readCrossChainBalances(account, request, paySourceChainId)
+          : await readBalances(account, request)
+      );
     } catch (error) {
       setPayNotice({ tone: "error", text: errorToMessage(error) });
     }
@@ -1193,9 +1341,12 @@ function App() {
     theme,
     account,
     chainId,
+    expectedChainId: page === "pay" ? payRequiredChainId : ARC_CHAIN_ID,
+    expectedChainLabel:
+      page === "pay" && isCrossChainPaymentRequest(payRequest) ? getCrossChainLabel(paySourceChainId) : "Arc Testnet",
     isConnecting,
     onConnect: handleConnectWallet,
-    onSwitch: handleSwitchNetwork,
+    onSwitch: page === "pay" ? handleSwitchPayNetwork : handleSwitchNetwork,
     onNavigate: handleNavigate,
     onToggleTheme: handleThemeToggle
   };
@@ -1264,7 +1415,7 @@ function App() {
       {page === "pay" && (
         <PayRequestPage
           account={account}
-          wrongChain={wrongChain}
+          wrongChain={payWrongChain}
           hasWalletProvider={hasWalletProvider}
           request={payRequest}
           receipt={payReceipt}
@@ -1285,7 +1436,14 @@ function App() {
           isVerifying={isVerifying}
           isGeneratingInvoice={isGeneratingInvoice}
           onConnect={handleConnectWallet}
-          onSwitch={handleSwitchNetwork}
+          onSwitch={handleSwitchPayNetwork}
+          sourceChainId={paySourceChainId}
+          onSourceChainChange={(chainId) => {
+            setPaySourceChainId(chainId);
+            setPayBalances(undefined);
+            setPayEstimate(undefined);
+            setPayNotice(undefined);
+          }}
           onEstimate={handlePayEstimate}
           onPay={handlePayQrRequest}
           onVerify={() => handleVerifyQrRequest(payRequest)}
@@ -1472,7 +1630,7 @@ function PaymentsPage({
               </div>
             )}
 
-            <div className="mode-callout">
+            <div className="request-callout">
               <strong>Need someone else to pay you?</strong>
               <button className="secondary-button" type="button" onClick={() => onNavigate("/qr-payments")}>
                 Generate QR request
@@ -1563,13 +1721,7 @@ function QrPaymentsPage({
 
               <div className="field-grid">
                 <Field label="Token">
-                  <select
-                    value={form.token}
-                    onChange={(event) => onFormChange({ ...form, token: event.target.value as PaymentToken })}
-                  >
-                    <option value="USDC">USDC</option>
-                    <option value="EURC">EURC</option>
-                  </select>
+                  <input value="USDC" readOnly aria-readonly="true" />
                 </Field>
                 <Field label="Amount">
                   <input
@@ -1627,6 +1779,17 @@ function QrPaymentsPage({
                   invoiceDate={displayRequest.invoiceDate}
                   status={displayRequest.status}
                 />
+                {isCrossChainPaymentRequest(displayRequest) && (
+                  <div className="route-summary">
+                    <Metric label="settles on" value="Arc Testnet" />
+                    <Metric
+                      label="pay from"
+                      value={(displayRequest.allowedSourceChainIds ?? getAllowedSourceChainIds())
+                        .map(getCrossChainLabel)
+                        .join(", ")}
+                    />
+                  </div>
+                )}
 
                 {qrIsFinal ? (
                   <QrFinalState request={displayRequest} receipt={selectedReceipt} />
@@ -1642,7 +1805,7 @@ function QrPaymentsPage({
                       <code>{shareUrl}</code>
                       <div className="qr-live-line" aria-live="polite">
                         <span className="qr-live-dot" aria-hidden="true" />
-                        {displayRequest.txHash ? "Payment submitted" : "Watching for payment"}
+                        {formatQrLiveStatus(displayRequest)}
                       </div>
                       <button className="secondary-button" type="button" onClick={() => onCopy(shareUrl)}>
                         Copy link
@@ -1711,7 +1874,7 @@ function QrPaymentsPage({
                     </div>
                   </button>
                   <div className="ledger-meta">
-                    <span>Wallet QR</span>
+                    <span>{isCrossChainPaymentRequest(request) ? "Settles on Arc" : "Wallet QR"}</span>
                     <span>{formatInvoiceDate(request.invoiceDate)}</span>
                     <span>{formatTimeLeft(request, now)}</span>
                   </div>
@@ -1764,6 +1927,8 @@ function PayRequestPage({
   isGeneratingInvoice,
   onConnect,
   onSwitch,
+  sourceChainId,
+  onSourceChainChange,
   onEstimate,
   onPay,
   onVerify,
@@ -1793,6 +1958,8 @@ function PayRequestPage({
   isGeneratingInvoice: boolean;
   onConnect: () => void;
   onSwitch: () => void;
+  sourceChainId: PaymentSourceChainId;
+  onSourceChainChange: (chainId: PaymentSourceChainId) => void;
   onEstimate: () => void;
   onPay: () => void;
   onVerify: () => void;
@@ -1801,6 +1968,12 @@ function PayRequestPage({
 }) {
   const hasSubmittedTransaction = Boolean(request?.txHash && request.status !== "paid");
   const submittedTxHash = request?.txHash;
+  const submittedTxUrl =
+    submittedTxHash && request && isCrossChainPaymentRequest(request)
+      ? getCrossChainExplorerTxUrl(request.settlement?.sourceChainId ?? sourceChainId, submittedTxHash)
+      : submittedTxHash
+        ? toExplorerTxUrl(submittedTxHash)
+        : undefined;
   const payButtonLabel = getPayButtonLabel(isPaying, lifecycle);
 
   return (
@@ -1826,6 +1999,12 @@ function PayRequestPage({
                 invoiceDate={request.invoiceDate}
                 status={status}
               />
+              {isCrossChainPaymentRequest(request) && (
+                <div className="route-summary">
+                  <Metric label="settles on" value="Arc Testnet" />
+                  <Metric label="selected source" value={getCrossChainLabel(sourceChainId)} />
+                </div>
+              )}
               <div className="expiry-grid">
                 <Metric label="time left" value={formatTimeLeft(request, now)} />
                 <Metric label="valid until" value={formatDateTime(request.expiresAt ?? request.dueAt)} />
@@ -1859,6 +2038,21 @@ function PayRequestPage({
                   }}
                 />
               )}
+              {isCrossChainPaymentRequest(request) && (
+                <Field label="Pay from">
+                  <select
+                    value={sourceChainId}
+                    onChange={(event) => onSourceChainChange(Number(event.target.value) as PaymentSourceChainId)}
+                    disabled={Boolean(request.txHash)}
+                  >
+                    {(request.allowedSourceChainIds ?? getAllowedSourceChainIds()).map((chainId) => (
+                      <option value={chainId} key={chainId}>
+                        {getCrossChainLabel(chainId)}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+              )}
 
               <WalletActionBlock
                 account={account}
@@ -1868,6 +2062,7 @@ function PayRequestPage({
                 walletNotice={undefined}
                 onConnect={onConnect}
                 onSwitch={onSwitch}
+                switchLabel={`Switch to ${getCrossChainLabel(sourceChainId)}`}
               />
 
               {account && !wrongChain && (
@@ -1877,6 +2072,8 @@ function PayRequestPage({
                   balances={balances}
                   insufficientToken={insufficientToken}
                   missingGas={missingGas}
+                  networkLabel={getCrossChainLabel(sourceChainId)}
+                  nativeSymbol={usesRemoteSource(request, sourceChainId) ? "ETH" : "USDC"}
                 />
               )}
 
@@ -1927,10 +2124,10 @@ function PayRequestPage({
                     <strong>{shortAddress(submittedTxHash, 10, 8)}</strong>
                   </div>
                   <div className="receipt-actions">
-                    <button className="text-button" type="button" onClick={() => onCopy(toExplorerTxUrl(submittedTxHash))}>
+                    <button className="text-button" type="button" onClick={() => submittedTxUrl && onCopy(submittedTxUrl)}>
                       Copy tx
                     </button>
-                    <a href={toExplorerTxUrl(submittedTxHash)} target="_blank" rel="noreferrer">
+                    <a href={submittedTxUrl} target="_blank" rel="noreferrer">
                       Open tx
                     </a>
                   </div>
@@ -2079,7 +2276,8 @@ function WalletActionBlock({
   isConnecting,
   walletNotice,
   onConnect,
-  onSwitch
+  onSwitch,
+  switchLabel = "Switch to Arc"
 }: {
   account?: string;
   wrongChain: boolean;
@@ -2088,6 +2286,7 @@ function WalletActionBlock({
   walletNotice?: Notice;
   onConnect: () => void;
   onSwitch: () => void;
+  switchLabel?: string;
 }) {
   return (
     <>
@@ -2108,7 +2307,7 @@ function WalletActionBlock({
       )}
       {account && wrongChain && (
         <button className="danger-button" type="button" onClick={onSwitch} disabled={isConnecting}>
-          Switch to Arc
+          {switchLabel}
         </button>
       )}
     </>
@@ -2120,21 +2319,25 @@ function TransferState({
   token,
   balances,
   insufficientToken,
-  missingGas
+  missingGas,
+  networkLabel = "Arc Testnet",
+  nativeSymbol = "USDC"
 }: {
   account: `0x${string}`;
   token: PaymentToken;
   balances?: Balances;
   insufficientToken: boolean;
   missingGas: boolean;
+  networkLabel?: string;
+  nativeSymbol?: string;
 }) {
   return (
     <>
       <div className="wallet-table">
         <Metric label="wallet" value={shortAddress(account)} />
         <Metric label={`${token} balance`} value={balances ? `${trimDisplay(balances.tokenBalance, 6)} ${token}` : "loading"} />
-        <Metric label="gas balance" value={balances ? `${trimDisplay(balances.nativeGas, 8)} USDC` : "loading"} />
-        <Metric label="network" value="Arc Testnet" />
+        <Metric label="gas balance" value={balances ? `${trimDisplay(balances.nativeGas, 8)} ${nativeSymbol}` : "loading"} />
+        <Metric label="network" value={networkLabel} />
       </div>
       {insufficientToken && <NoticeBar compact notice={{ tone: "error", text: `Insufficient ${token} balance.` }} />}
       {(insufficientToken || missingGas) && (
@@ -2143,6 +2346,8 @@ function TransferState({
           token={token}
           insufficientToken={insufficientToken}
           missingGas={missingGas}
+          networkLabel={networkLabel}
+          nativeSymbol={nativeSymbol}
         />
       )}
     </>
@@ -2150,11 +2355,13 @@ function TransferState({
 }
 
 function EstimateGrid({ estimate }: { estimate: TransferEstimate }) {
+  const symbol = estimate.nativeSymbol ?? "USDC";
+  const gasLabel = estimate.needsApproval && estimate.approvalGas ? "approval + payment gas" : "estimated gas";
   return (
     <div className="estimate-line">
-      <Metric label="estimated gas" value={estimate.gas.toString()} />
-      <Metric label="gas price" value={`${trimDisplay(formatUnits(estimate.gasPrice, 18), 8)} USDC`} />
-      <Metric label="estimated fee" value={`${trimDisplay(estimate.fee, 8)} USDC`} />
+      <Metric label={gasLabel} value={estimate.gas.toString()} />
+      <Metric label="gas price" value={`${trimDisplay(formatUnits(estimate.gasPrice, 18), 8)} ${symbol}`} />
+      <Metric label="estimated fee" value={`${trimDisplay(estimate.fee, 8)} ${symbol}`} />
     </div>
   );
 }
@@ -2164,6 +2371,8 @@ function TopNav({
   theme,
   account,
   chainId,
+  expectedChainId,
+  expectedChainLabel,
   isConnecting,
   onConnect,
   onSwitch,
@@ -2174,6 +2383,8 @@ function TopNav({
   theme: Theme;
   account?: string;
   chainId?: number;
+  expectedChainId: number;
+  expectedChainLabel: string;
   isConnecting: boolean;
   onConnect: () => void;
   onSwitch: () => void;
@@ -2223,6 +2434,8 @@ function TopNav({
         <WalletPill
           account={account}
           chainId={chainId}
+          expectedChainId={expectedChainId}
+          expectedChainLabel={expectedChainLabel}
           isConnecting={isConnecting}
           onConnect={onConnect}
           onSwitch={onSwitch}
@@ -2368,12 +2581,16 @@ function SiteFooter({ onNavigate }: { onNavigate: NavigateHandler }) {
 function WalletPill({
   account,
   chainId,
+  expectedChainId,
+  expectedChainLabel,
   isConnecting,
   onConnect,
   onSwitch
 }: {
   account?: string;
   chainId?: number;
+  expectedChainId: number;
+  expectedChainLabel: string;
   isConnecting: boolean;
   onConnect: () => void;
   onSwitch: () => void;
@@ -2386,10 +2603,10 @@ function WalletPill({
     );
   }
 
-  if (chainId !== ARC_CHAIN_ID) {
+  if (chainId !== expectedChainId) {
     return (
       <button className="wallet-pill warning" type="button" onClick={onSwitch} disabled={isConnecting}>
-        Wrong chain
+        Switch to {expectedChainLabel}
       </button>
     );
   }
@@ -2436,19 +2653,24 @@ function RecoveryPanel({
   account,
   token,
   insufficientToken,
-  missingGas
+  missingGas,
+  networkLabel = "Arc Testnet",
+  nativeSymbol = "USDC"
 }: {
   account: `0x${string}`;
   token: PaymentToken;
   insufficientToken: boolean;
   missingGas: boolean;
+  networkLabel?: string;
+  nativeSymbol?: string;
 }) {
+  const showArcLinks = networkLabel === "Arc Testnet";
   const extraToken = insufficientToken && token !== "USDC" ? ` and ${token}` : "";
   const message = missingGas
     ? token === "USDC"
-      ? "Fund enough Arc Testnet USDC for amount plus gas."
-      : `Fund Arc Testnet USDC for gas${extraToken}.`
-    : `Fund more ${token} on Arc Testnet.`;
+      ? `Fund enough ${networkLabel} ${token} plus ${nativeSymbol} gas.`
+      : `Fund ${networkLabel} ${nativeSymbol} for gas${extraToken}.`
+    : `Fund more ${token} on ${networkLabel}.`;
 
   return (
     <div className="recovery-panel">
@@ -2456,14 +2678,16 @@ function RecoveryPanel({
         <strong>Balance recovery</strong>
         <span>{message}</span>
       </div>
-      <div className="tool-actions">
-        <a className="secondary-button" href={ARC_FAUCET_URL} target="_blank" rel="noreferrer">
-          Faucet
-        </a>
-        <a className="secondary-button" href={toExplorerAddressUrl(account)} target="_blank" rel="noreferrer">
-          Arcscan wallet
-        </a>
-      </div>
+      {showArcLinks && (
+        <div className="tool-actions">
+          <a className="secondary-button" href={ARC_FAUCET_URL} target="_blank" rel="noreferrer">
+            Faucet
+          </a>
+          <a className="secondary-button" href={toExplorerAddressUrl(account)} target="_blank" rel="noreferrer">
+            Arcscan wallet
+          </a>
+        </div>
+      )}
     </div>
   );
 }
@@ -2473,7 +2697,14 @@ function StatusBadge({ status }: { status: PaymentStatus }) {
 }
 
 function formatPayLifecycle(lifecycle: PayLifecycle): string {
-  return lifecycle.replace("_", " ");
+  switch (lifecycle) {
+    case "awaiting_wallet":
+      return "awaiting wallet";
+    case "proving":
+      return "generating proof";
+    default:
+      return lifecycle.replace("_", " ");
+  }
 }
 
 function getPayButtonLabel(isPaying: boolean, lifecycle: PayLifecycle): string {
@@ -2489,6 +2720,10 @@ function getPayButtonLabel(isPaying: boolean, lifecycle: PayLifecycle): string {
     case "submitted":
     case "confirming":
       return "Confirming...";
+    case "proving":
+      return "Generating proof...";
+    case "settling":
+      return "Settling...";
     case "verified":
       return "Verified";
     case "failed":
@@ -2528,10 +2763,9 @@ function applyQrStatusPayload(payload: QrStatusPayload, setRequests: RequestStat
 
 async function createLocalQrRequest(form: QrFormState): Promise<PaymentRequest> {
   const recipient = validateRecipient(form.recipient);
-  const token = form.token;
+  const token = "USDC";
   const amount = formatTokenAmount(parseTokenAmount(form.amount, token), token);
   const createdAt = new Date().toISOString();
-  const blockNumber = await publicClient.getBlockNumber();
 
   return {
     id: crypto.randomUUID(),
@@ -2543,8 +2777,13 @@ async function createLocalQrRequest(form: QrFormState): Promise<PaymentRequest> 
     invoiceDate: normalizeInvoiceDate(form.invoiceDate),
     expiresAt: createExpiry(createdAt),
     createdAt,
-    startBlock: blockNumber.toString(),
-    status: "open"
+    startBlock: "0",
+    status: "open",
+    destinationChainId: ARC_DESTINATION_CHAIN_ID,
+    allowedSourceChainIds: getAllowedSourceChainIds(),
+    settlement: {
+      destinationChainId: ARC_DESTINATION_CHAIN_ID
+    }
   };
 }
 
@@ -2578,12 +2817,44 @@ function ensureGasBalance(balances: Balances, transfer: SpendableTransfer, estim
   }
 }
 
+function ensureNativeGasBalance(balances: Balances, estimate: TransferEstimate | undefined, networkLabel: string) {
+  if (!estimate) {
+    return;
+  }
+  if (parseUnits(balances.nativeGas, 18) < estimate.gas * estimate.gasPrice) {
+    throw new Error(`Insufficient ${networkLabel} ETH for gas.`);
+  }
+}
+
 function hasInsufficientGas(
   balances: Balances | undefined,
   transfer: SpendableTransfer | undefined,
   estimate?: TransferEstimate
 ): boolean {
   return hasInsufficientNativeSpendBalance(balances, transfer, estimate);
+}
+
+function usesRemoteSource(
+  request: PaymentRequest | undefined,
+  sourceChainId: PaymentSourceChainId
+): sourceChainId is Exclude<PaymentSourceChainId, typeof ARC_CHAIN_ID> {
+  return Boolean(isCrossChainPaymentRequest(request) && isRemotePaymentSourceChainId(sourceChainId));
+}
+
+function chooseDefaultPaymentSource(request: PaymentRequest): PaymentSourceChainId {
+  const allowed = isCrossChainPaymentRequest(request) ? request.allowedSourceChainIds : undefined;
+  return allowed?.includes(ARC_CHAIN_ID) ? ARC_CHAIN_ID : allowed?.[0] ?? ARC_CHAIN_ID;
+}
+
+function hasInsufficientNativeGas(balances: Balances | undefined, estimate?: TransferEstimate): boolean {
+  if (!balances || !estimate) {
+    return false;
+  }
+  try {
+    return parseUnits(balances.nativeGas, 18) < estimate.gas * estimate.gasPrice;
+  } catch {
+    return false;
+  }
 }
 
 function useInsufficientToken(balances: Balances | undefined, transfer: TokenTransfer | DirectFormState | undefined): boolean {
@@ -2617,6 +2888,26 @@ function formatTimeLeft(request: PaymentRequest, now: Date): string {
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
   return `${minutes}:${String(seconds).padStart(2, "0")}`;
+}
+
+function formatQrLiveStatus(request: PaymentRequest): string {
+  if (isCrossChainPaymentRequest(request)) {
+    switch (request.settlement?.stage) {
+      case "submitted":
+        return "Source payment submitted";
+      case "proving":
+        return "Generating Polymer proof";
+      case "settling":
+        return "Relaying settlement";
+      case "settled":
+        return "Payment settled";
+      case "failed":
+        return "Settlement failed";
+      default:
+        return "Watching Arc settlement";
+    }
+  }
+  return request.txHash ? "Payment submitted" : "Watching for payment";
 }
 
 function formatDateTime(value?: string): string {

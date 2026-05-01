@@ -1,4 +1,5 @@
 import type { Hash } from "viem";
+import type { PaymentSourceChainId } from "./crosschain";
 import type { PaymentRequest, PaymentToken } from "./payments";
 import type { QrStatusPayload } from "./realtime";
 
@@ -36,21 +37,23 @@ export async function fetchRemoteQrStatus(requestId: string): Promise<QrStatusPa
 export async function recordRemoteQrSubmission(
   requestId: string,
   txHash: Hash,
-  submittedAt?: string
+  submittedAt?: string,
+  sourceChainId?: PaymentSourceChainId
 ): Promise<QrStatusPayload | undefined> {
   return requestJson<QrStatusPayload>("/api/qr-submissions", {
     method: "POST",
-    body: JSON.stringify({ id: requestId, txHash, submittedAt })
+    body: JSON.stringify({ id: requestId, txHash, submittedAt, sourceChainId })
   });
 }
 
 export async function confirmRemoteQrPayment(
   requestId: string,
-  txHash: Hash
+  txHash: Hash,
+  sourceChainId?: PaymentSourceChainId
 ): Promise<QrConfirmationPayload | undefined> {
   return requestJson<QrConfirmationPayload>("/api/qr-confirmations", {
     method: "POST",
-    body: JSON.stringify({ id: requestId, txHash })
+    body: JSON.stringify({ id: requestId, txHash, sourceChainId })
   });
 }
 

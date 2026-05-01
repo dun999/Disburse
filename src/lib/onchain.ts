@@ -49,6 +49,10 @@ export type TransferEstimate = {
   gas: bigint;
   gasPrice: bigint;
   fee: string;
+  nativeSymbol?: string;
+  approvalGas?: bigint;
+  paymentGas?: bigint;
+  needsApproval?: boolean;
 };
 
 export type TokenTransfer = {
