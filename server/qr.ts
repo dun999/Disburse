@@ -389,6 +389,9 @@ async function confirmStoredCrossChainQrPayment(
       sourceChainIdInput ?? request.settlement?.sourceChainId
     );
   } catch (error) {
+    if (isRecoverableCrossChainSourceError(error)) {
+      return keepCrossChainRequestOpen(request, txHash, errorToFailureMessage(error), sourceChainIdInput);
+    }
     return failCrossChainRequest(request, txHash, errorToFailureMessage(error));
   }
 
@@ -488,6 +491,44 @@ async function failCrossChainRequest(request: PaymentRequest, txHash: Hash, mess
   return {
     status: "failed" as const,
     request: failedRequest,
+    message
+  };
+}
+
+async function keepCrossChainRequestOpen(
+  request: PaymentRequest,
+  txHash: Hash,
+  message: string,
+  sourceChainIdInput?: unknown
+) {
+  const openRequest: PaymentRequest = {
+    ...request,
+    status: "open",
+    txHash,
+    settlement: request.destinationChainId
+      ? {
+          ...request.settlement,
+          destinationChainId: ARC_DESTINATION_CHAIN_ID,
+          sourceChainId: isPaymentSourceChainId(sourceChainIdInput) ? sourceChainIdInput : request.settlement?.sourceChainId,
+          sourceTxHash: txHash,
+          stage: "submitted"
+        }
+      : request.settlement
+  };
+  await updatePaymentRequest(openRequest);
+  await insertQrEvent({
+    request_id: openRequest.id,
+    event_type: "submitted",
+    status: "open",
+    message,
+    tx_hash: txHash,
+    submitted_at: openRequest.submittedAt,
+    settlement: openRequest.settlement
+  });
+
+  return {
+    status: "open" as const,
+    request: openRequest,
     message
   };
 }
@@ -605,4 +646,18 @@ function errorToFailureMessage(error: unknown): string {
     return error.message;
   }
   return "Arc settlement failed.";
+}
+
+function isRecoverableCrossChainSourceError(error: unknown): boolean {
+  if (!(error instanceof HttpError) || error.statusCode !== 409) {
+    return false;
+  }
+
+  return (
+    error.message.includes("receipt is not available") ||
+    error.message.includes("did not emit the expected cross-chain payment event") ||
+    error.message.includes("not the QR pay transaction") ||
+    error.message.includes("not sent to the configured QR payment contract") ||
+    error.message.includes("missing its global log index")
+  );
 }

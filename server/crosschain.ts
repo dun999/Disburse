@@ -144,6 +144,19 @@ export function resolveSourcePaymentLog(
 
   const expectedRequestId = requestIdToBytes32(request.id).toLowerCase();
   const expectedAmount = parseTokenAmount(request.amount, request.token);
+  if (receipt.to?.toLowerCase() === config.tokenAddress.toLowerCase()) {
+    throw new HttpError(
+      409,
+      "The submitted transaction is a USDC token transaction, not the QR pay transaction. Submit or verify the hash from the wallet transaction that calls pay on the QR payment contract."
+    );
+  }
+  if (receipt.to?.toLowerCase() !== config.sourceContract.toLowerCase()) {
+    throw new HttpError(
+      409,
+      `The submitted transaction was not sent to the configured QR payment contract ${config.sourceContract}.`
+    );
+  }
+
   const matchingLog = receipt.logs
     .map((log) => readSourceReceiptLog(log, config.sourceContract))
     .filter((log): log is SourceReceiptLog => log !== undefined)
