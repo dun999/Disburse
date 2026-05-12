@@ -36,6 +36,8 @@ type Props = {
   setIsCollapsed: (v: boolean) => void;
   page: Page;
   onNavigate: (e: React.MouseEvent<HTMLAnchorElement>, target: string) => void;
+  /** Optional connected wallet address; enables the footer status row. */
+  account?: string;
 };
 
 const navItems: NavItem[] = [
@@ -57,11 +59,13 @@ const GROUP_LABEL: Record<NavItem["group"], string> = {
 /**
  * Primary navigation rail. Fixed width, never collapses by accident.
  * Grouped into three simple categories so the nav feels curated, not
- * arbitrary.
+ * arbitrary. A small wallet status row lives in the footer when a
+ * wallet address is provided.
  */
-export default function Sidebar({ isCollapsed, setIsCollapsed, page, onNavigate }: Props) {
+export default function Sidebar({ isCollapsed, setIsCollapsed, page, onNavigate, account }: Props) {
   const { t } = useI18n();
   const groups: NavItem["group"][] = ["operate", "manage", "reference"];
+  const shortAddr = account ? `${account.slice(0, 6)}\u2009\u2009${account.slice(-4)}` : null;
 
   return (
     <nav
@@ -74,7 +78,7 @@ export default function Sidebar({ isCollapsed, setIsCollapsed, page, onNavigate 
       {/* Brand */}
       <div
         className={cn(
-          "flex h-[52px] items-center border-b border-[var(--line)]",
+          "flex h-[56px] items-center border-b border-[var(--line)]",
           isCollapsed ? "justify-center" : "px-5",
         )}
       >
@@ -138,7 +142,14 @@ export default function Sidebar({ isCollapsed, setIsCollapsed, page, onNavigate 
                       )}
                       aria-hidden="true"
                     />
-                    <Icon size={15} strokeWidth={1.6} className="flex-shrink-0" />
+                    <Icon
+                      size={15}
+                      strokeWidth={1.6}
+                      className={cn(
+                        "flex-shrink-0 transition-colors",
+                        isActive ? "text-[var(--ink)]" : "text-[var(--muted)]",
+                      )}
+                    />
                     {!isCollapsed && <span className="font-medium">{itemLabel}</span>}
                   </a>
                 );
@@ -148,18 +159,40 @@ export default function Sidebar({ isCollapsed, setIsCollapsed, page, onNavigate 
         })}
       </div>
 
-      {/* Footer: collapse toggle + environment hint */}
+      {/* Footer: wallet status + network hint + collapse toggle */}
       <div className="border-t border-[var(--line)] p-2">
         {!isCollapsed && (
-          <div className="mb-1 px-3 py-1.5">
-            <p className="font-mono text-[9px] uppercase tracking-[0.18em] text-[var(--muted-soft)]">
-              {t("network")}
-            </p>
-            <p className="mt-0.5 text-[11px] text-[var(--muted)]">
+          <div className="mb-2 rounded-[var(--btn-radius)] border border-[var(--line)] bg-[var(--input-bg)] px-3 py-2">
+            <div className="flex items-center justify-between">
+              <p className="font-mono text-[9px] uppercase tracking-[0.18em] text-[var(--muted)]">
+                {t("network")}
+              </p>
+              <span
+                className={cn(
+                  "inline-flex items-center gap-1 font-mono text-[9px] uppercase tracking-[0.16em]",
+                  account ? "text-[var(--green-text)]" : "text-[var(--muted)]",
+                )}
+              >
+                <span
+                  className={cn(
+                    "h-1.5 w-1.5 rounded-full",
+                    account ? "bg-[var(--green-text)]" : "bg-[var(--muted-soft)]",
+                  )}
+                  aria-hidden="true"
+                />
+                {account ? "Live" : "Idle"}
+              </span>
+            </div>
+            <p className="mt-1 text-[11px] text-[var(--ink)]">
               Arc Testnet
               <span className="mx-1.5 text-[var(--line-strong)]">&middot;</span>
-              <span className="font-mono">5042002</span>
+              <span className="font-mono text-[var(--muted)]">5042002</span>
             </p>
+            {shortAddr && (
+              <p className="mt-0.5 truncate font-mono text-[10px] text-[var(--muted)]">
+                {shortAddr}
+              </p>
+            )}
           </div>
         )}
         <button

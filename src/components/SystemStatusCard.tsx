@@ -1,6 +1,7 @@
 import {
   Bar,
   BarChart,
+  CartesianGrid,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -25,7 +26,7 @@ type Props = {
  * Network status and 6-month volume.
  *
  * The top block is a compact key-value table; the bottom block is a bar
- * chart of monthly volume. No decorative gradients.
+ * chart of monthly volume. Hairline grid only, no decorative gradients.
  */
 export default function SystemStatusCard({
   monthlyData,
@@ -54,12 +55,19 @@ export default function SystemStatusCard({
           ].join(" ")}
         >
           <span
-            className={[
-              "h-1.5 w-1.5 rounded-full",
-              rpcHealthy ? "bg-[var(--green-text)]" : "bg-[var(--yellow-text)]",
-            ].join(" ")}
+            className="relative flex h-1.5 w-1.5 items-center justify-center"
             aria-hidden="true"
-          />
+          >
+            {rpcHealthy && (
+              <span className="absolute h-full w-full animate-ping rounded-full bg-[var(--green-text)] opacity-50" />
+            )}
+            <span
+              className={[
+                "relative h-1.5 w-1.5 rounded-full",
+                rpcHealthy ? "bg-[var(--green-text)]" : "bg-[var(--yellow-text)]",
+              ].join(" ")}
+            />
+          </span>
           {rpcHealthy ? t("operational") : t("degraded")}
         </span>
       </header>
@@ -72,13 +80,18 @@ export default function SystemStatusCard({
       </dl>
 
       {/* Monthly volume */}
-      <div className="flex min-h-[100px] flex-1 flex-col px-5 py-4">
+      <div className="flex min-h-[104px] flex-1 flex-col px-5 py-4">
         <p className="mb-2 font-mono text-[9.5px] uppercase tracking-[0.2em] text-[var(--muted)]">
           {t("sixMonthVolume")}
         </p>
         <div className="flex-1">
           <ResponsiveContainer width="100%" height="100%">
             <BarChart data={monthlyData} margin={{ top: 0, right: 0, bottom: 0, left: 0 }}>
+              <CartesianGrid
+                strokeDasharray="2 4"
+                vertical={false}
+                stroke="var(--line-soft)"
+              />
               <XAxis
                 dataKey="month"
                 axisLine={false}
@@ -106,9 +119,9 @@ export default function SystemStatusCard({
                 dataKey="volume"
                 fill="var(--primary-bg)"
                 fillOpacity={0.85}
-                radius={[1, 1, 0, 0]}
+                radius={[2, 2, 0, 0]}
                 name={t("settledVolume")}
-                maxBarSize={20}
+                maxBarSize={22}
               />
             </BarChart>
           </ResponsiveContainer>
