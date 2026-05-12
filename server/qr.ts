@@ -46,6 +46,7 @@ import {
 } from "./crosschain.js";
 import { HttpError } from "./http.js";
 import { getSupabaseAdmin } from "./supabase.js";
+import { tryIssuePsp } from "./psp/hook.js";
 
 export type CreateQrRequestInput = {
   recipient: string;
@@ -220,6 +221,7 @@ export async function confirmStoredQrPayment(requestId: string, txHash: Hash, so
       receipt,
       settlement
     });
+    await tryIssuePsp(paidRequest, receipt);
     return {
       status: "paid" as const,
       request: paidRequest,
@@ -437,6 +439,7 @@ async function confirmStoredCrossChainQrPayment(
       receipt: result.receipt,
       settlement: result.settlement
     });
+    await tryIssuePsp(paidRequest, result.receipt);
     return {
       status: "paid" as const,
       request: paidRequest,
