@@ -11,7 +11,8 @@ import type { PaymentRequest, Receipt } from "../../src/lib/payments.js";
 import { issuePsp } from "./issue.js";
 
 /**
- * Attempt to issue a PSP. Silently returns if:
+ * Attempt to issue a PSP. Returns the PSP UID if successful, undefined otherwise.
+ * Silently returns undefined if:
  * - The feature flag is off
  * - The signing key is not configured
  * - Any error occurs during issuance
@@ -19,22 +20,24 @@ import { issuePsp } from "./issue.js";
 export async function tryIssuePsp(
   request: PaymentRequest,
   receipt: Receipt
-): Promise<void> {
+): Promise<string | undefined> {
   if (process.env.ENABLE_PSP !== "1") {
-    return;
+    return undefined;
   }
 
   if (!process.env.DISBURSE_PSP_SIGNING_KEY) {
-    return;
+    return undefined;
   }
 
   try {
-    await issuePsp(request, receipt);
+    const { psp } = await issuePsp(request, receipt);
+    return psp.uid;
   } catch (error) {
     // Non-fatal — log and continue
     console.error(
       `[PSP] Failed to issue PSP for request ${request.id}:`,
       error instanceof Error ? error.message : error
     );
+    return undefined;
   }
 }

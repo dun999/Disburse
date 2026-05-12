@@ -221,12 +221,13 @@ export async function confirmStoredQrPayment(requestId: string, txHash: Hash, so
       receipt,
       settlement
     });
-    await tryIssuePsp(paidRequest, receipt);
+    const pspUid = await tryIssuePsp(paidRequest, receipt);
     return {
       status: "paid" as const,
       request: paidRequest,
       receipt,
-      message: resolution.message
+      message: resolution.message,
+      psp_uid: pspUid
     };
   }
 
@@ -439,12 +440,13 @@ async function confirmStoredCrossChainQrPayment(
       receipt: result.receipt,
       settlement: result.settlement
     });
-    await tryIssuePsp(paidRequest, result.receipt);
+    const pspUid = await tryIssuePsp(paidRequest, result.receipt);
     return {
       status: "paid" as const,
       request: paidRequest,
       receipt: result.receipt,
-      message: "Payment settled on Arc. Invoice is ready."
+      message: "Payment settled on Arc. Invoice is ready.",
+      psp_uid: pspUid
     };
   } catch (error) {
     return keepCrossChainSettlementPending(provedRequest, sourcePayment, errorToFailureMessage(error));
