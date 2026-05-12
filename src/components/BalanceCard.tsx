@@ -1,5 +1,6 @@
-import { ArrowRight, QrCode, Send } from "lucide-react";
+import { ArrowRight, ArrowUpRight, ArrowDownRight, QrCode, Send } from "lucide-react";
 import type { Address } from "viem";
+import { Area, AreaChart, ResponsiveContainer } from "recharts";
 import { useI18n } from "../lib/i18n";
 
 type Props = {
@@ -10,14 +11,21 @@ type Props = {
   receiptCount: number;
   account?: Address;
   onNavigate: (target: string) => void;
+  /**
+   * 7-day trend series used for the headline sparkline. Optional — when
+   * omitted the sparkline is hidden.
+   */
+  trend?: { value: number }[];
+  /** Percent change over the trend window. Optional. */
+  trendDeltaPct?: number;
 };
 
 /**
  * Headline metric card for the dashboard.
  *
- * Design intent. Institutional, calm. One large number, a small group of
- * supporting metrics, two actions. No gradient highlights, no decorative
- * rings, no glow.
+ * Design intent. Institutional, calm. One large number flanked by a small
+ * trend sparkline and a delta chip, a tight group of supporting metrics,
+ * and two actions. No gradient highlights, no decorative rings.
  */
 export default function BalanceCard({
   totalVolume,
@@ -27,11 +35,16 @@ export default function BalanceCard({
   receiptCount,
   account,
   onNavigate,
+  trend,
+  trendDeltaPct,
 }: Props) {
   const { t, formatCurrency } = useI18n();
   const successRate =
     requestCount > 0 ? Math.round((receiptCount / requestCount) * 100) : 0;
   const isEmpty = requestCount === 0;
+  const hasTrend = Array.isArray(trend) && trend.length > 1;
+  const deltaKnown = typeof trendDeltaPct === "number" && Number.isFinite(trendDeltaPct);
+  const deltaPositive = deltaKnown && (trendDeltaPct as number) >= 0;
 
   return (
     <section
@@ -62,24 +75,77 @@ export default function BalanceCard({
           )}
         </div>
 
-        {/* Primary number */}
-        <div className="flex items-baseline gap-2.5">
-          <h2 className="text-[2.25rem] font-semibold leading-none tracking-[-0.025em] text-[var(--ink)] tabular-nums sm:text-[2.75rem]">
-            {formatCurrency(totalVolume)}
-          </h2>
+        {/* Primary number + trend */}
+        <div className="flex flex-wrap items-end justify-between gap-4">
+          <div className="min-w-0">
+            <div className="flex items-baseline gap-2.5">
+              <h2 className="text-[2.25rem] font-semibold leading-none tracking-[-0.025em] text-[var(--ink)] tabular-nums sm:text-[2.75rem]">
+                {formatCurrency(totalVolume)}
+              </h2>
+              {deltaKnown && !isEmpty && (
+                <span
+                  className={[
+                    "inline-flex items-center gap-0.5 rounded-sm border px-1.5 py-0.5 font-mono text-[10px] font-medium tabular-nums",
+                    deltaPositive
+                      ? "border-[var(--green-text)]/25 bg-[var(--green-bg)] text-[var(--green-text)]"
+                      : "border-[var(--red-text)]/25 bg-[var(--red-bg)] text-[var(--red-text)]",
+                  ].join(" ")}
+                >
+                  {deltaPositive ? (
+                    <ArrowUpRight size={10} strokeWidth={2} />
+                  ) : (
+                    <ArrowDownRight size={10} strokeWidth={2} />
+                  )}
+                  {deltaPositive ? "+" : ""}
+                  {(trendDeltaPct as number).toFixed(1)}%
+                </span>
+              )}
+            </div>
+            {isEmpty ? (
+              <p className="mt-2 text-[12px] text-[var(--muted)]">
+                {t("noRequestsVolume")}
+              </p>
+            ) : (
+              <p className="mt-2 font-mono text-[10.5px] uppercase tracking-[0.18em] text-[var(--muted)]">
+                Last 7 days
+              </p>
+            )}
+          </div>
+
+          {hasTrend && !isEmpty && (
+            <div
+              className="h-12 w-32 shrink-0 sm:w-40"
+              aria-hidden="true"
+            >
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart data={trend} margin={{ top: 2, right: 0, bottom: 0, left: 0 }}>
+                  <defs>
+                    <linearGradient id="balanceSpark" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor="var(--primary-bg)" stopOpacity={0.25} />
+                      <stop offset="100%" stopColor="var(--primary-bg)" stopOpacity={0} />
+                    </linearGradient>
+                  </defs>
+                  <Area
+                    type="monotone"
+                    dataKey="value"
+                    stroke="var(--primary-bg)"
+                    strokeWidth={1.5}
+                    fill="url(#balanceSpark)"
+                    dot={false}
+                    isAnimationActive={false}
+                  />
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
+          )}
         </div>
-        {isEmpty && (
-          <p className="mt-2 text-[12px] text-[var(--muted)]">
-            {t("noRequestsVolume")}
-          </p>
-        )}
 
         {/* Actions */}
         <div className="mt-6 flex flex-wrap items-center gap-2">
           <button
             type="button"
             onClick={() => onNavigate("/qr-payments")}
-            className="inline-flex items-center gap-1.5 rounded-[var(--btn-radius)] bg-[var(--primary-bg)] px-3.5 py-2 text-[12.5px] font-medium text-[var(--primary-text)] transition-colors hover:bg-[var(--primary-bg-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--paper)]"
+            className="inline-flex items-center gap-1.5 rounded-[var(--btn-radius)] bg-[var(--primary-bg)] px-3.5 py-2 text-[12.5px] font-semibold text-[var(--primary-text)] transition-colors hover:bg-[var(--primary-bg-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--paper)]"
           >
             <QrCode size={13} strokeWidth={1.75} />
             {t("newRequest")}
@@ -88,7 +154,7 @@ export default function BalanceCard({
           <button
             type="button"
             onClick={() => onNavigate("/payments")}
-            className="inline-flex items-center gap-1.5 rounded-[var(--btn-radius)] border border-[var(--line)] px-3.5 py-2 text-[12.5px] font-medium text-[var(--ink)] transition-colors hover:bg-[var(--line-soft)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus)]"
+            className="inline-flex items-center gap-1.5 rounded-[var(--btn-radius)] border border-[var(--line)] bg-[var(--paper)] px-3.5 py-2 text-[12.5px] font-medium text-[var(--ink)] transition-colors hover:border-[var(--line-strong)] hover:bg-[var(--line-soft)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus)]"
           >
             <Send size={13} strokeWidth={1.75} />
             {t("directTransfer")}

@@ -1,11 +1,13 @@
 import {
   Area,
   AreaChart,
+  CartesianGrid,
   ResponsiveContainer,
   Tooltip,
   XAxis,
   YAxis,
 } from "recharts";
+import { ArrowUpRight, ArrowDownRight } from "lucide-react";
 import { useI18n } from "../lib/i18n";
 
 type ActivityDatum = {
@@ -30,6 +32,12 @@ export default function MonthlyStats({ activityData }: Props) {
   const totalCount = activityData.reduce((s, d) => s + d.count, 0);
   const totalVolume = activityData.reduce((s, d) => s + d.volume, 0);
 
+  // Trend delta: compare the last 3 days to the previous 3 so a single zero
+  // day doesn't drive a wild swing.
+  const delta = computeWindowDelta(activityData.map((d) => d.volume));
+  const showDelta = delta !== null && totalVolume > 0;
+  const deltaPositive = (delta ?? 0) >= 0;
+
   return (
     <section className="flex h-full flex-col rounded-[var(--card-radius)] border border-[var(--line)] bg-[var(--paper)]">
       {/* Heading */}
@@ -43,12 +51,33 @@ export default function MonthlyStats({ activityData }: Props) {
           </p>
         </div>
         <div className="text-right">
-          <p className="text-[15px] font-semibold leading-none text-[var(--ink)] tabular-nums">
-            {totalCount}
-            <span className="ml-1.5 font-mono text-[9.5px] uppercase tracking-[0.18em] font-normal text-[var(--muted)]">
-              {totalCount === 1 ? t("req") : t("reqs")}
-            </span>
-          </p>
+          <div className="flex items-center justify-end gap-2">
+            <p className="text-[15px] font-semibold leading-none text-[var(--ink)] tabular-nums">
+              {totalCount}
+              <span className="ml-1.5 font-mono text-[9.5px] uppercase tracking-[0.18em] font-normal text-[var(--muted)]">
+                {totalCount === 1 ? t("req") : t("reqs")}
+              </span>
+            </p>
+            {showDelta && (
+              <span
+                className={[
+                  "inline-flex items-center gap-0.5 rounded-sm border px-1.5 py-0.5 font-mono text-[9.5px] font-medium tabular-nums",
+                  deltaPositive
+                    ? "border-[var(--green-text)]/25 bg-[var(--green-bg)] text-[var(--green-text)]"
+                    : "border-[var(--red-text)]/25 bg-[var(--red-bg)] text-[var(--red-text)]",
+                ].join(" ")}
+                title="vs previous 3 days"
+              >
+                {deltaPositive ? (
+                  <ArrowUpRight size={9} strokeWidth={2} />
+                ) : (
+                  <ArrowDownRight size={9} strokeWidth={2} />
+                )}
+                {deltaPositive ? "+" : ""}
+                {(delta as number).toFixed(0)}%
+              </span>
+            )}
+          </div>
           <p className="mt-1.5 font-mono text-[10px] tabular-nums text-[var(--green-text)]">
             {formatCurrency(totalVolume)}
           </p>
@@ -56,15 +85,20 @@ export default function MonthlyStats({ activityData }: Props) {
       </header>
 
       {/* Chart */}
-      <div className="min-h-[128px] flex-1 px-2 pb-2 pt-4">
+      <div className="min-h-[132px] flex-1 px-2 pb-2 pt-4">
         <ResponsiveContainer width="100%" height="100%">
-          <AreaChart data={activityData} margin={{ top: 4, right: 8, bottom: 0, left: 8 }}>
+          <AreaChart data={activityData} margin={{ top: 4, right: 10, bottom: 0, left: 10 }}>
             <defs>
               <linearGradient id="activityGradient" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor="var(--primary-bg)" stopOpacity={0.18} />
+                <stop offset="0%" stopColor="var(--primary-bg)" stopOpacity={0.22} />
                 <stop offset="100%" stopColor="var(--primary-bg)" stopOpacity={0} />
               </linearGradient>
             </defs>
+            <CartesianGrid
+              strokeDasharray="2 4"
+              vertical={false}
+              stroke="var(--line-soft)"
+            />
             <XAxis
               dataKey="name"
               axisLine={false}
@@ -108,4 +142,14 @@ export default function MonthlyStats({ activityData }: Props) {
       </div>
     </section>
   );
+}
+
+function computeWindowDelta(series: number[]): number | null {
+  if (series.length < 4) return null;
+  const mid = Math.floor(series.length / 2);
+  const prev = series.slice(0, mid).reduce((a, b) => a + b, 0);
+  const curr = series.slice(mid).reduce((a, b) => a + b, 0);
+  if (prev === 0 && curr === 0) return null;
+  if (prev === 0) return 100;
+  return ((curr - prev) / prev) * 100;
 }

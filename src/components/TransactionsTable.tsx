@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { QrCode } from "lucide-react";
+import { ChevronRight, QrCode } from "lucide-react";
 import type { PaymentRequest, Receipt, PaymentStatus } from "../lib/payments";
 import {
   encodeRequestPayload,
@@ -19,13 +19,13 @@ type Props = {
 
 const STATUS_CONFIG: Record<
   PaymentStatus,
-  { labelKey: string; dot: string; text: string }
+  { labelKey: string; dot: string; text: string; ring: string }
 > = {
-  open:           { labelKey: "open",    dot: "bg-[var(--blue-text)]",   text: "text-[var(--blue-text)]" },
-  paid:           { labelKey: "paid",    dot: "bg-[var(--green-text)]",  text: "text-[var(--green-text)]" },
-  expired:        { labelKey: "expired", dot: "bg-[var(--muted)]",       text: "text-[var(--muted)]" },
-  failed:         { labelKey: "failed",  dot: "bg-[var(--red-text)]",    text: "text-[var(--red-text)]" },
-  possible_match: { labelKey: "review",  dot: "bg-[var(--yellow-text)]", text: "text-[var(--yellow-text)]" },
+  open:           { labelKey: "open",    dot: "bg-[var(--blue-text)]",   text: "text-[var(--blue-text)]",   ring: "ring-[var(--blue-text)]/20 bg-[var(--blue-bg)]" },
+  paid:           { labelKey: "paid",    dot: "bg-[var(--green-text)]",  text: "text-[var(--green-text)]",  ring: "ring-[var(--green-text)]/20 bg-[var(--green-bg)]" },
+  expired:        { labelKey: "expired", dot: "bg-[var(--muted)]",       text: "text-[var(--muted)]",       ring: "ring-[var(--line)] bg-[var(--gray-bg)]" },
+  failed:         { labelKey: "failed",  dot: "bg-[var(--red-text)]",    text: "text-[var(--red-text)]",    ring: "ring-[var(--red-text)]/20 bg-[var(--red-bg)]" },
+  possible_match: { labelKey: "review",  dot: "bg-[var(--yellow-text)]", text: "text-[var(--yellow-text)]", ring: "ring-[var(--yellow-text)]/20 bg-[var(--yellow-bg)]" },
 };
 
 const FILTERS = ["all", "open", "paid", "expired", "failed"] as const;
@@ -41,8 +41,8 @@ const FILTER_LABEL: Record<(typeof FILTERS)[number], string> = {
  * Ledger of recent payment requests.
  *
  * Designed to read like a statement: a quiet header row, a dense hairline
- * grid, tabular numerals, monospace references. No row hover chrome beyond
- * a soft background change.
+ * grid, tabular numerals, monospace references. Rows reveal a chevron on
+ * hover so it's clear they're navigable.
  */
 export default function TransactionsTable({
   requests,
@@ -136,6 +136,7 @@ export default function TransactionsTable({
                 <Th>{t("route")}</Th>
                 <Th align="right">{t("amount")}</Th>
                 <Th align="right">{t("issued")}</Th>
+                <th className="w-8" />
               </tr>
             </thead>
             <tbody>
@@ -146,26 +147,36 @@ export default function TransactionsTable({
                 return (
                   <tr
                     key={r.id}
-                    className="group cursor-pointer border-b border-[var(--line-soft)] transition-colors last:border-b-0 hover:bg-[var(--line-soft)]/50"
+                    className="group cursor-pointer border-b border-[var(--line-soft)] transition-colors last:border-b-0 hover:bg-[var(--line-soft)]/60"
                     onClick={() =>
                       onNavigate(`/pay?r=${encodeRequestPayload(r)}`)
                     }
                   >
                     <Td>
-                      <div className="flex items-center gap-2">
+                      <span
+                        className={[
+                          "inline-flex items-center gap-1.5 rounded-sm px-1.5 py-0.5 ring-1 ring-inset",
+                          cfg.ring,
+                        ].join(" ")}
+                      >
                         <span
                           className={`h-1.5 w-1.5 rounded-full ${cfg.dot}`}
                           aria-hidden="true"
                         />
-                        <span className={`text-[11.5px] font-medium ${cfg.text}`}>
+                        <span className={`text-[10.5px] font-medium uppercase tracking-[0.08em] ${cfg.text}`}>
                           {t(cfg.labelKey)}
                         </span>
-                      </div>
+                      </span>
                     </Td>
                     <Td>
                       <span className="text-[12.5px] font-medium text-[var(--ink)]">
                         {r.label}
                       </span>
+                      {r.note && (
+                        <span className="ml-2 hidden max-w-[24ch] truncate align-middle text-[11px] text-[var(--muted)] md:inline-block">
+                          {r.note}
+                        </span>
+                      )}
                     </Td>
                     <Td>
                       <span className="font-mono text-[11px] text-[var(--muted)]">
@@ -187,9 +198,20 @@ export default function TransactionsTable({
                     </Td>
                     <Td align="right">
                       <span className="font-mono text-[11px] text-[var(--muted)]">
+                        {formatRelative(r.createdAt, now)}
+                      </span>
+                      <span className="block font-mono text-[9.5px] text-[var(--muted-soft)]">
                         {formatInvoiceDate(r.invoiceDate)}
                       </span>
                     </Td>
+                    <td className="pr-4 text-right">
+                      <ChevronRight
+                        size={14}
+                        strokeWidth={1.75}
+                        className="text-[var(--muted-soft)] opacity-0 transition-opacity group-hover:opacity-100"
+                        aria-hidden="true"
+                      />
+                    </td>
                   </tr>
                 );
               })}
@@ -267,11 +289,30 @@ function EmptyState({
         <button
           type="button"
           onClick={onCreate}
-          className="rounded-[var(--btn-radius)] border border-[var(--line)] px-3 py-1.5 text-[11.5px] font-medium text-[var(--ink)] transition-colors hover:bg-[var(--line-soft)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus)]"
+          className="rounded-[var(--btn-radius)] bg-[var(--primary-bg)] px-3 py-1.5 text-[11.5px] font-semibold text-[var(--primary-text)] transition-colors hover:bg-[var(--primary-bg-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus)]"
         >
           {t("createFirstRequest")}
         </button>
       )}
     </div>
   );
+}
+
+/** Lightweight, locale-agnostic "N d ago" formatter. */
+function formatRelative(iso: string, now: Date): string {
+  const t = new Date(iso).getTime();
+  if (!Number.isFinite(t)) return "\u2014";
+  const diffMs = now.getTime() - t;
+  const sec = Math.floor(diffMs / 1000);
+  if (sec < 60) return "just now";
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min}m ago`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr}h ago`;
+  const day = Math.floor(hr / 24);
+  if (day < 30) return `${day}d ago`;
+  const mo = Math.floor(day / 30);
+  if (mo < 12) return `${mo}mo ago`;
+  const yr = Math.floor(day / 365);
+  return `${yr}y ago`;
 }

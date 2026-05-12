@@ -2226,6 +2226,7 @@ function App() {
         setIsCollapsed={setIsSidebarCollapsed}
         page={page}
         onNavigate={handleNavigate}
+        account={account}
       />
 
       <main className={cn("flex-1 flex flex-col transition-all duration-300 relative z-10", isSidebarCollapsed ? "ml-[56px]" : "ml-[236px]")}>
@@ -4095,6 +4096,11 @@ function DashboardPage({
   });
 
   const hasActivity = requests.length > 0;
+  // Compute a 7-day trend delta (second half vs first half) for the
+  // headline sparkline chip. This mirrors the logic in MonthlyStats so
+  // the two cards tell a consistent story.
+  const trendSeries = activityData.map((d) => ({ value: d.volume }));
+  const trendDeltaPct = computeTrendDelta(activityData.map((d) => d.volume));
   const onboardingSteps: { label: string; done: boolean; href: string }[] = [
     { label: t("connectWalletStep"), done: Boolean(account), href: "/" },
     { label: t("fundFaucetStep"), done: Boolean(account), href: ARC_FAUCET_URL },
@@ -4105,7 +4111,10 @@ function DashboardPage({
   const progressPct = Math.round((completedSteps / onboardingSteps.length) * 100);
 
   return (
-    <div className="relative z-10 mx-auto grid w-full max-w-[1400px] grid-cols-1 gap-4 pb-12 xl:grid-cols-12">
+    <div className="relative z-10 mx-auto flex w-full max-w-[1400px] flex-col gap-4 pb-12">
+      <DashboardIntro now={now} account={account} rpcHealthy={rpcHealth?.healthy} />
+
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-12">
       {/* Main column */}
       <div className="space-y-4 xl:col-span-8">
         <BalanceCard
@@ -4116,6 +4125,8 @@ function DashboardPage({
           receiptCount={receipts.length}
           account={account}
           onNavigate={onNavigate}
+          trend={trendSeries}
+          trendDeltaPct={trendDeltaPct ?? undefined}
         />
 
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
@@ -4161,8 +4172,112 @@ function DashboardPage({
 
         <ResourcesCard />
       </aside>
+      </div>
     </div>
   );
+}
+
+function DashboardIntro({
+  now,
+  account,
+  rpcHealthy,
+}: {
+  now: Date;
+  account?: `0x${string}`;
+  rpcHealthy?: boolean;
+}) {
+  const greeting = getGreeting(now);
+  const dateLabel = new Intl.DateTimeFormat(undefined, {
+    weekday: "long",
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  }).format(now);
+
+  return (
+    <section className="flex flex-wrap items-end justify-between gap-3 pb-1">
+      <div className="min-w-0">
+        <p className="font-mono text-[9.5px] uppercase tracking-[0.22em] text-[var(--muted)]">
+          {dateLabel}
+        </p>
+        <h2 className="mt-1.5 truncate text-[18px] font-semibold leading-tight tracking-[-0.015em] text-[var(--ink)] sm:text-[20px]">
+          {greeting}
+          {account ? "." : ", connect a wallet to begin."}
+        </h2>
+      </div>
+
+      <div className="flex items-center gap-2">
+        {/* Period selector. Visual only in this build; today's dashboard */}
+        {/* reports the lifetime figure — the chips let us ship a larger */}
+        {/* filter later without changing the shell. */}
+        <div
+          role="tablist"
+          aria-label="Period"
+          className="flex items-center gap-0.5 rounded-[var(--btn-radius)] border border-[var(--line)] bg-[var(--input-bg)] p-0.5"
+        >
+          {(["7D", "30D", "90D", "All"] as const).map((p) => {
+            const active = p === "All";
+            return (
+              <button
+                key={p}
+                type="button"
+                role="tab"
+                aria-selected={active}
+                tabIndex={active ? 0 : -1}
+                disabled={!active}
+                className={cn(
+                  "rounded-[3px] px-2.5 py-1 text-[10.5px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus)]",
+                  active
+                    ? "bg-[var(--paper)] text-[var(--ink)] shadow-[0_0_0_1px_var(--line)]"
+                    : "text-[var(--muted)] hover:text-[var(--ink)]",
+                  !active && "cursor-not-allowed opacity-70",
+                )}
+                title={active ? undefined : "Coming soon"}
+              >
+                {p}
+              </button>
+            );
+          })}
+        </div>
+        <span
+          className={cn(
+            "hidden items-center gap-1.5 rounded-[var(--btn-radius)] border px-2 py-1 font-mono text-[9.5px] uppercase tracking-[0.14em] md:inline-flex",
+            rpcHealthy
+              ? "border-[var(--green-text)]/25 bg-[var(--green-bg)] text-[var(--green-text)]"
+              : "border-[var(--yellow-text)]/25 bg-[var(--yellow-bg)] text-[var(--yellow-text)]",
+          )}
+          title="RPC health"
+        >
+          <span
+            className={cn(
+              "h-1.5 w-1.5 rounded-full",
+              rpcHealthy ? "bg-[var(--green-text)]" : "bg-[var(--yellow-text)]",
+            )}
+          />
+          {rpcHealthy ? "Healthy" : "Starting"}
+        </span>
+      </div>
+    </section>
+  );
+}
+
+function getGreeting(now: Date): string {
+  const hour = now.getHours();
+  if (hour < 5) return "Good evening";
+  if (hour < 12) return "Good morning";
+  if (hour < 18) return "Good afternoon";
+  return "Good evening";
+}
+
+/** Second-half vs first-half percent delta for a short series. */
+function computeTrendDelta(series: number[]): number | null {
+  if (series.length < 4) return null;
+  const mid = Math.floor(series.length / 2);
+  const prev = series.slice(0, mid).reduce((a, b) => a + b, 0);
+  const curr = series.slice(mid).reduce((a, b) => a + b, 0);
+  if (prev === 0 && curr === 0) return null;
+  if (prev === 0) return 100;
+  return ((curr - prev) / prev) * 100;
 }
 
 function QuickActionsCard({

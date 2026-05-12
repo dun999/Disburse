@@ -20,9 +20,10 @@ type Props = {
 /**
  * Top bar for the console shell.
  *
- * Deliberately quiet. No glowing orbs or pill chromatics. Page title in
- * serif-weighted sans, optional subtitle in small muted text, a tidy
- * cluster of controls on the right.
+ * Calm, institutional. Page title + subtitle on the left, an environment
+ * pill that gives constant context about where you are, and a tidy
+ * cluster of wallet/settings controls on the right. No animated orbs,
+ * no decorative gradients.
  */
 export default function Header({
   title,
@@ -45,21 +46,40 @@ export default function Header({
   const displaySubtitle = subtitle ? translateHeaderSubtitle(subtitle, t) : undefined;
 
   return (
-    <header className="sticky top-0 z-20 flex h-[52px] items-center justify-between gap-6 border-b border-[var(--line)] bg-[var(--paper-translucent)] px-6 backdrop-blur-md">
+    <header className="sticky top-0 z-20 flex h-[56px] items-center justify-between gap-6 border-b border-[var(--line)] bg-[var(--paper-translucent)] px-6 backdrop-blur-md">
       {/* Title cluster */}
       <div className="min-w-0">
         <h1 className="truncate text-[14px] font-semibold leading-tight tracking-[-0.01em] text-[var(--ink)]">
           {displayTitle}
         </h1>
         {displaySubtitle && (
-          <p className="truncate text-[11.5px] leading-tight text-[var(--muted)]">
+          <p className="mt-0.5 truncate text-[11.5px] leading-tight text-[var(--muted)]">
             {displaySubtitle}
           </p>
         )}
       </div>
 
       {/* Controls */}
-      <div className="flex items-center gap-1">
+      <div className="flex items-center gap-1.5">
+        {/* Environment pill — constant context about which network we're on. */}
+        <div
+          className="hidden items-center gap-2 rounded-[var(--btn-radius)] border border-[var(--line)] bg-[var(--input-bg)] px-2.5 py-1 md:inline-flex"
+          title={`${expectedChainLabel} \u00b7 chainId ${expectedChainId}`}
+        >
+          <span className="font-mono text-[9px] uppercase tracking-[0.2em] text-[var(--muted)]">
+            Env
+          </span>
+          <span className="h-3 w-px bg-[var(--line)]" aria-hidden="true" />
+          <span className="font-mono text-[10.5px] text-[var(--ink)]">
+            {expectedChainLabel}
+          </span>
+          <span className="rounded-sm border border-[var(--line)] bg-[var(--paper)] px-1 py-[1px] font-mono text-[8.5px] uppercase leading-none tracking-[0.16em] text-[var(--muted)]">
+            Testnet
+          </span>
+        </div>
+
+        <span className="mx-1 hidden h-4 w-px bg-[var(--line)] md:inline-block" aria-hidden="true" />
+
         <IconButton onClick={onOpenSettings} ariaLabel={t("openSettings")}>
           <SettingsIcon size={15} strokeWidth={1.6} />
         </IconButton>
@@ -95,7 +115,7 @@ export default function Header({
           </AnimatePresence>
         </IconButton>
 
-        <span className="mx-1.5 h-4 w-px bg-[var(--line)]" aria-hidden="true" />
+        <span className="mx-1 h-4 w-px bg-[var(--line)]" aria-hidden="true" />
 
         {/* Wallet state */}
         {!account ? (
@@ -103,7 +123,7 @@ export default function Header({
             type="button"
             onClick={onConnect}
             disabled={isConnecting}
-            className="rounded-[var(--btn-radius)] border border-[var(--line)] bg-[var(--input-bg)] px-3 py-1.5 text-[12px] font-medium text-[var(--ink)] transition-colors hover:border-[var(--line-strong)] hover:bg-[var(--paper-2)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus)] disabled:opacity-60"
+            className="rounded-[var(--btn-radius)] bg-[var(--primary-bg)] px-3 py-1.5 text-[12px] font-semibold text-[var(--primary-text)] transition-colors hover:bg-[var(--primary-bg-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--paper)] disabled:opacity-60"
           >
             {isConnecting ? t("connecting") : t("connectWallet")}
           </button>
@@ -120,9 +140,12 @@ export default function Header({
         ) : (
           <div className="flex items-center gap-2 rounded-[var(--btn-radius)] border border-[var(--line)] bg-[var(--input-bg)] px-2.5 py-1.5">
             <span
-              className="h-1.5 w-1.5 rounded-full bg-[var(--primary-bg)]"
+              className="relative flex h-1.5 w-1.5 items-center justify-center"
               aria-hidden="true"
-            />
+            >
+              <span className="absolute h-full w-full animate-ping rounded-full bg-[var(--primary-bg)] opacity-40" />
+              <span className="relative h-1.5 w-1.5 rounded-full bg-[var(--primary-bg)]" />
+            </span>
             <span className="font-mono text-[11px] leading-none text-[var(--ink)]">
               {shortAddr}
             </span>
