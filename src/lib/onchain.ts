@@ -129,7 +129,7 @@ export function getInjectedProvider(): EthereumProvider | undefined {
   if (typeof window === "undefined") {
     return undefined;
   }
-  return window.ethereum as EthereumProvider | undefined;
+  return (window as Window & { ethereum?: EthereumProvider }).ethereum;
 }
 
 export async function connectWallet(provider: EthereumProvider): Promise<Address> {

@@ -1171,6 +1171,8 @@ function App() {
       "qr-payments": "QR requests · Disburse",
       pay: "Pay request · Disburse",
       "import-export": "Backup · Disburse",
+      milestones: "Milestones · Disburse",
+      statements: "Statements · Disburse",
       docs: "Documentation · Disburse",
     };
     document.title = titles[page] ?? "Disburse";
@@ -2210,6 +2212,8 @@ function App() {
     "qr-payments":   { title: "QR requests",    subtitle: "Create a QR invoice for someone else to scan and pay." },
     pay:             { title: "Pay request",    subtitle: "Review and settle a QR payment request." },
     "import-export": { title: "Import · Export", subtitle: "Back up or restore your requests and receipts." },
+    milestones:      { title: "Milestones",     subtitle: "Create PSP-gated payment chains for staged work." },
+    statements:      { title: "Statements",     subtitle: "Generate settlement proof bundles for reconciliation." },
     docs:            { title: "Documentation",  subtitle: "How Disburse settles, verifies, and exports payments." },
   };
   const { title: headerTitle, subtitle: headerSubtitle } = routeMeta[page as Exclude<Page, "landing">] ?? routeMeta.dashboard;

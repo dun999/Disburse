@@ -12,6 +12,7 @@
 
 import type { Address, Hex } from "viem";
 import { ARC_CHAIN_ID } from "../../src/lib/arc.js";
+import { isRemotePaymentSourceChainId } from "../../src/lib/crosschain.js";
 import { isCrossChainPaymentRequest, type PaymentRequest, type Receipt } from "../../src/lib/payments.js";
 import { buildSignedPsp } from "../../src/lib/psp/sign.js";
 import type { NetworkMode, PspCore, PspV1 } from "../../src/lib/psp/types.js";
@@ -89,7 +90,11 @@ export async function issuePsp(
 
   // Fetch source log if cross-chain
   let source: PspCore["source"];
-  if (isCrossChain && receipt.sourceChainId && receipt.sourceTxHash) {
+  if (
+    isCrossChain &&
+    isRemotePaymentSourceChainId(receipt.sourceChainId) &&
+    receipt.sourceTxHash
+  ) {
     const sourceContract = process.env[
       `SOURCE_CONTRACT_${receipt.sourceChainId}`
     ] as Address | undefined;

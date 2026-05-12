@@ -13,7 +13,7 @@
  * values lowercased with 0x prefix.
  */
 
-import { keccak256, toBytes, type Hex } from "viem";
+import { keccak256, type Hex } from "viem";
 import type { PspCore } from "./types";
 
 // ---------- Domain separator ----------
@@ -158,5 +158,5 @@ export function canonicalBytes(core: PspCore): Uint8Array {
  */
 export function computeDigest(core: PspCore): Hex {
   const bytes = canonicalBytes(core);
-  return keccak256(toBytes(bytes));
+  return keccak256(bytes);
 }
