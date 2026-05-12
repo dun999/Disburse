@@ -9,6 +9,7 @@
 
 import type { PaymentRequest, Receipt } from "../../src/lib/payments.js";
 import { issuePsp } from "./issue.js";
+import { triggerWebhooks } from "../webhooks.js";
 
 /**
  * Attempt to issue a PSP. Returns the PSP UID if successful, undefined otherwise.
@@ -31,6 +32,12 @@ export async function tryIssuePsp(
 
   try {
     const { psp } = await issuePsp(request, receipt);
+
+    // Fire webhooks in the background (non-blocking, non-fatal)
+    triggerWebhooks(psp as unknown as Record<string, unknown>).catch((err) => {
+      console.error(`[PSP] Webhook delivery error for ${psp.uid}:`, err instanceof Error ? err.message : err);
+    });
+
     return psp.uid;
   } catch (error) {
     // Non-fatal — log and continue
