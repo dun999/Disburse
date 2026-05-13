@@ -180,5 +180,5 @@ export function buildCrossChainNonce(
 }
 
 export function getAllowedSourceChainIds(): PaymentSourceChainId[] {
-  return [...PAYMENT_SOURCE_CHAIN_IDS];
+  return [...REMOTE_PAYMENT_SOURCE_CHAIN_IDS];
 }

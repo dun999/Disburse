@@ -2963,3 +2963,44 @@ html[data-theme="light"] .quick-card:hover:not(:disabled) {
   80%  { transform: scale(1.4); opacity: 0;    }
   100% { transform: scale(1.4); opacity: 0;    }
 }
+
+@media (max-width: 800px) {
+  .site-shell {
+    flex-direction: column;
+    overflow-y: auto;
+  }
+  .top-nav {
+    width: 100% !important;
+    height: auto !important;
+    border-right: none;
+    border-bottom: 1px solid var(--line);
+    padding: 16px;
+  }
+  .top-nav.collapsed {
+    padding: 0;
+  }
+  .desk-grid,
+  .single-flow-grid {
+    grid-template-columns: 1fr !important;
+  }
+  .create-pane {
+    border-right: none !important;
+    border-bottom: 1px solid var(--line);
+  }
+  .section-header {
+    grid-template-columns: 1fr;
+    gap: 12px;
+  }
+  .system-strip {
+    grid-template-columns: repeat(2, 1fr) !important;
+  }
+  .field-grid, .expiry-grid, .wallet-table, .estimate-line, .route-summary {
+    grid-template-columns: 1fr !important;
+  }
+  main {
+    overflow-y: visible !important;
+  }
+  .action-row button {
+    flex: 1 1 100%;
+  }
+}

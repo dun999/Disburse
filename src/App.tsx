@@ -2685,47 +2685,51 @@ function QrPaymentsPage({
             <PaneTitle id="qr-output-heading" label={t("qrOutput")} />
             {displayRequest && shareUrl ? (
               <>
-                <PaymentPreview
-                  title={displayRequest.label}
-                  note={displayRequest.note ?? t("noNote")}
-                  amount={displayRequest.amount}
-                  token={displayRequest.token}
-                  recipient={displayRequest.recipient}
-                  invoiceDate={displayRequest.invoiceDate}
-                  status={displayRequest.status}
-                />
-                {isCrossChainPaymentRequest(displayRequest) && (
-                  <div className="route-summary">
-                    <Metric label={t("settlesOn")} value="Arc Testnet" />
-                    <Metric
-                      label={t("payFrom")}
-                      value={(displayRequest.allowedSourceChainIds ?? getAllowedSourceChainIds())
-                        .map(getCrossChainLabel)
-                        .join(", ")}
+                {!selectedReceipt && (
+                  <>
+                    <PaymentPreview
+                      title={displayRequest.label}
+                      note={displayRequest.note ?? t("noNote")}
+                      amount={displayRequest.amount}
+                      token={displayRequest.token}
+                      recipient={displayRequest.recipient}
+                      invoiceDate={displayRequest.invoiceDate}
+                      status={displayRequest.status}
                     />
-                  </div>
-                )}
+                    {isCrossChainPaymentRequest(displayRequest) && (
+                      <div className="route-summary">
+                        <Metric label={t("settlesOn")} value="Arc Testnet" />
+                        <Metric
+                          label={t("payFrom")}
+                          value={(displayRequest.allowedSourceChainIds ?? getAllowedSourceChainIds())
+                            .map(getCrossChainLabel)
+                            .join(", ")}
+                        />
+                      </div>
+                    )}
 
-                {qrIsFinal ? (
-                  <QrFinalState request={displayRequest} receipt={selectedReceipt} />
-                ) : (
-                  <QrShareCard
-                    request={displayRequest}
-                    qrDataUrl={qrDataUrl || undefined}
-                    shareUrl={shareUrl}
-                    liveStatusLabel={formatQrLiveStatus(displayRequest)}
-                    onCopy={onCopy}
-                    onDownload={
-                      qrDataUrl
-                        ? () => {
-                            const a = document.createElement("a");
-                            a.href = qrDataUrl;
-                            a.download = `${displayRequest.label || "qr"}.png`;
-                            a.click();
-                          }
-                        : undefined
-                    }
-                  />
+                    {qrIsFinal ? (
+                      <QrFinalState request={displayRequest} receipt={selectedReceipt} />
+                    ) : (
+                      <QrShareCard
+                        request={displayRequest}
+                        qrDataUrl={qrDataUrl || undefined}
+                        shareUrl={shareUrl}
+                        liveStatusLabel={formatQrLiveStatus(displayRequest)}
+                        onCopy={onCopy}
+                        onDownload={
+                          qrDataUrl
+                            ? () => {
+                                const a = document.createElement("a");
+                                a.href = qrDataUrl;
+                                a.download = `${displayRequest.label || "qr"}.png`;
+                                a.click();
+                              }
+                            : undefined
+                        }
+                      />
+                    )}
+                  </>
                 )}
 
                 {isCrossChainPaymentRequest(displayRequest) && (
